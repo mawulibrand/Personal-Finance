@@ -1,0 +1,43 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://finance:finance_local@localhost:5432/finance
+      WEB_ORIGIN: http://localhost:3000
+    services:
+      postgres:
+        image: postgres:18.0
+        env:
+          POSTGRES_USER: finance
+          POSTGRES_PASSWORD: finance_local
+          POSTGRES_DB: finance
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U finance -d finance"
+          --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm db:deploy
+      - name: Identity integration tests
+        run: |
+          node apps/api/dist/main.js > /tmp/finance-api.log 2>&1 &
+          API_PID=$!
+          trap 'kill "$API_PID"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail http://localhost:4000/health/ready; then break; fi
+            sleep 1
+          done
+          node --test tests/integration/identity.test.mjs

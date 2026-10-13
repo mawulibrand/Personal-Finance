@@ -1,0 +1,1035 @@
+Personal Finance & Wealth Management System
+Background
+Many working people earn regular or irregular income but struggle to convert that income into savings, investments, emergency reserves and long-term wealth because they lack structured financial-management tools and practical guidance.
+The proposed platform is a personal financial-management and wealth-building system initially focused on Ghana while being architected for additional countries and currencies.
+The initial target users are salaried and self-employed individuals who need help understanding:
+•	where their money goes;
+•	how much they can reasonably save;
+•	their debts and liabilities;
+•	their current net worth;
+•	progress toward financial goals;
+•	the performance and structure of their investments;
+•	what financial actions they could consider next.
+The system is primarily an information, planning, tracking and decision-support platform.
+It will not hold customer funds, execute investments or transfer money in the MVP. Users continue using their existing banks, Mobile Money services, brokers, fund managers and investment platforms.
+Financial data is manually entered during the MVP. Bank integrations, Mobile Money integrations, CSV/bank-statement imports and automatic transaction synchronization are explicitly excluded.
+The system's core design principle is:
+Financial Engine calculates → Rules detect → AI explains/recommends → User decides → System tracks
+AI must never become the authoritative calculator for balances, returns, interest, net worth or portfolio metrics.
+________________________________________
+Requirements
+Must Have
+•	Secure registration, authentication and account management.
+•	Email verification and password recovery.
+•	Personal Financial Space automatically created for every user.
+•	Household/shared Financial Spaces.
+•	Strict privacy between Personal and Household information.
+•	Manual recording of multiple income sources.
+•	Flexible salary/payday schedules.
+•	Multiple possible payday dates for a salary source.
+•	Actual salary amount/date confirmation.
+•	Manual categorized expenses.
+•	Standard and custom categories.
+•	Recurring income and expenses.
+•	Savings accounts/portfolios.
+•	Investment portfolios.
+•	Individual investments.
+•	Investment transaction history.
+•	Historical investment valuations.
+•	Fixed deposits.
+•	Simple and compound fixed-deposit interest.
+•	Investment/fixed-deposit maturity dates where applicable.
+•	Detailed liabilities and debts.
+•	Net-worth calculation.
+•	Financial goals.
+•	Monthly budgets.
+•	Monthly financial plans.
+•	Dashboard covering income, expenses, savings, investments, liabilities and net worth.
+•	Investment-risk-profile onboarding.
+•	Store underlying risk questionnaire responses rather than only the final classification.
+•	AI-generated personalized financial insights and possible strategies.
+•	User ability to accept, reject or modify recommendations.
+•	Multiple strategies with trade-offs rather than a single supposedly correct answer.
+•	Conversion of an accepted strategy into a Financial Plan.
+•	Comparison of Recommended → Approved → Actual.
+•	Progress tracking.
+•	GHS as the initial default currency.
+•	Manual data entry only.
+•	No custody, transfers or automated investment execution.
+Should Have
+•	Multiple currencies.
+•	Base currency per Financial Space.
+•	Historical exchange rates.
+•	Scenario planning.
+•	Inflation-adjusted projections.
+•	Contribution-growth assumptions.
+•	Savings/contribution streaks.
+•	Achievement badges and progression levels.
+•	Advanced portfolio analytics.
+•	TWR.
+•	XIRR.
+•	Absolute and percentage returns.
+•	Annualized return.
+•	Asset allocation.
+•	Concentration analysis.
+•	Diversification analysis.
+•	Volatility.
+•	Investment contribution analysis.
+•	Investment income.
+•	Maturity exposure.
+•	Historical-period comparison.
+•	Goal alignment.
+•	Portfolio projections and simulations.
+•	AI explanations of deterministic analytics.
+•	Maturity reminders.
+•	Financial charts/history.
+•	Contextual financial education.
+•	Verified External Investment Discovery.
+•	Payday and financial-routine engine.
+•	In-app, email and PWA push notifications.
+Could Have
+•	Conversational AI financial assistant.
+•	Richer user-defined investment classifications.
+•	Native Android/iOS applications.
+•	Additional advanced analytics when reliable benchmark/market data becomes available.
+Won't Have in MVP
+•	Bank synchronization.
+•	Mobile Money synchronization.
+•	CSV/bank-statement imports.
+•	Automated investment execution.
+•	Money transfers.
+•	Customer-fund custody.
+•	Automatic market-price feeds.
+________________________________________
+Method
+1. Architecture
+The MVP will use a modular monolith.
+Microservices and Kubernetes are deliberately avoided initially because they would increase infrastructure and operational complexity for a solo developer without providing sufficient MVP benefit.
+@startuml
+
+actor User
+
+rectangle "Next.js PWA" as Web
+
+rectangle "NestJS Modular Monolith" {
+  component "REST API" as API
+  component "Financial Engine" as Finance
+  component "Portfolio Analytics" as Analytics
+  component "Planning Engine" as Planning
+  component "Rules Engine" as Rules
+  component "AI Orchestrator" as AI
+  component "Authorization" as AuthZ
+  component "Notification Service" as Notifications
+}
+
+component "NestJS Worker" as Worker
+database "PostgreSQL" as DB
+database "Redis" as Redis
+cloud "Object Storage" as S3
+cloud "LLM Provider" as LLM
+cloud "FX Provider" as FX
+cloud "Email / Push" as Messaging
+
+User --> Web
+Web --> API
+
+API --> AuthZ
+API --> Finance
+API --> Analytics
+API --> Planning
+API --> DB
+API --> Redis
+
+Worker --> Redis
+Worker --> DB
+Worker --> Finance
+Worker --> Analytics
+Worker --> Rules
+Worker --> AI
+Worker --> Notifications
+
+AI --> LLM
+Worker --> FX
+Notifications --> Messaging
+API --> S3
+
+@enduml
+2. Technology Stack
+Recommended baseline:
+•	TypeScript end-to-end.
+•	Node.js 24 LTS.
+•	Next.js 16 PWA.
+•	NestJS 12 backend.
+•	PostgreSQL 18.
+•	Prisma ORM 7 initially.
+•	Redis 8.x.
+•	BullMQ 6.x.
+•	pnpm workspaces.
+•	Turborepo.
+•	Docker.
+•	S3-compatible object storage.
+•	External LLM behind an internal provider interface.
+Pin exact minor/patch versions in the lockfile and update through controlled dependency upgrades rather than using floating production versions.
+3. Repository
+/
+├── apps/
+│   ├── web/
+│   ├── api/
+│   └── worker/
+│
+├── packages/
+│   ├── database/
+│   ├── financial-engine/
+│   ├── analytics/
+│   ├── ai/
+│   ├── authorization/
+│   ├── validation/
+│   ├── types/
+│   └── config/
+│
+├── infrastructure/
+│   ├── docker/
+│   └── deployment/
+│
+├── tests/
+│   ├── integration/
+│   └── e2e/
+│
+├── pnpm-workspace.yaml
+└── turbo.json
+The API and worker may use the same NestJS source repository/container image with different startup commands.
+________________________________________
+4. Financial Spaces
+All financial records belong to a FinancialSpace.
+FinancialSpace.type
+
+PERSONAL
+HOUSEHOLD
+Every registered user receives one Personal Space automatically.
+Personal information remains private even after joining a Household Space.
+Household roles:
+OWNER
+ADMIN
+MEMBER
+VIEWER
+OWNER has complete household control.
+ADMIN manages household finances and membership but cannot remove the owner.
+MEMBER can create/edit normal shared financial information.
+VIEWER is read-only.
+Dependants can exist without user accounts and may be associated with financial goals.
+________________________________________
+5. Core Database Model
+All primary keys are UUIDs.
+Important financial records contain:
+created_at TIMESTAMPTZ
+updated_at TIMESTAMPTZ
+deleted_at TIMESTAMPTZ NULL
+Money uses PostgreSQL NUMERIC, normally NUMERIC(19,4).
+Application calculations use a decimal arithmetic library.
+JavaScript floating-point arithmetic must not be used for authoritative monetary calculations.
+Core modules:
+IDENTITY
+users
+user_auth_methods
+mfa_methods
+sessions
+
+OWNERSHIP
+financial_spaces
+space_memberships
+dependants
+account_ownership
+shared_financial_items
+
+MONEY
+categories
+financial_accounts
+transactions
+recurring_transactions
+
+PAYDAY
+income_sources
+salary_schedules
+salary_expected_dates
+salary_payments
+payday_routines
+planned_contributions
+
+SAVINGS
+savings_accounts
+savings_transactions
+savings_valuations
+
+INVESTMENTS
+investments
+investment_transactions
+investment_valuations
+fixed_deposits
+
+LIABILITIES
+liabilities
+liability_payments
+
+PLANNING
+budgets
+budget_allocations
+financial_goals
+scenarios
+financial_plans
+financial_plan_items
+
+ANALYTICS
+portfolio_snapshots
+portfolio_metrics
+
+AI
+financial_profile_snapshots
+financial_rules
+ai_recommendations
+recommendation_strategies
+recommendation_actions
+
+GAMIFICATION
+achievement_definitions
+earned_achievements
+streaks
+
+CURRENCY
+currencies
+exchange_rates
+
+NOTIFICATIONS
+notification_preferences
+notifications
+
+SECURITY
+audit_events
+________________________________________
+6. Transactions
+Conceptual schema:
+transactions (
+    id UUID PRIMARY KEY,
+    financial_space_id UUID NOT NULL,
+    account_id UUID,
+    category_id UUID,
+    type VARCHAR NOT NULL,
+    amount NUMERIC(19,4) NOT NULL,
+    currency_code CHAR(3) NOT NULL,
+    transaction_date DATE NOT NULL,
+    description TEXT,
+    created_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    deleted_at TIMESTAMPTZ
+)
+Income and expenses use explicit transaction types rather than relying on positive/negative values alone.
+________________________________________
+7. Flexible Payday Model
+Salary must not assume one fixed payday.
+An income source can contain several possible payday positions/dates.
+Example:
+Monthly Salary
+Expected amount: GHS 6,000
+
+Possible dates:
+25
+26
+27
+28
+Conceptually:
+income_sources (
+    id UUID PRIMARY KEY,
+    financial_space_id UUID NOT NULL,
+    name VARCHAR NOT NULL,
+    income_type VARCHAR NOT NULL,
+    expected_amount NUMERIC(19,4),
+    currency_code CHAR(3) NOT NULL,
+    frequency VARCHAR NOT NULL,
+    active BOOLEAN NOT NULL
+);
+
+salary_expected_dates (
+    id UUID PRIMARY KEY,
+    income_source_id UUID NOT NULL,
+    sequence INTEGER NOT NULL,
+    day_of_month INTEGER,
+    adjustment_rule VARCHAR NOT NULL
+);
+
+salary_payments (
+    id UUID PRIMARY KEY,
+    income_source_id UUID NOT NULL,
+    period_year INTEGER NOT NULL,
+    period_month INTEGER NOT NULL,
+    actual_amount NUMERIC(19,4),
+    actual_received_date DATE,
+    status VARCHAR NOT NULL
+);
+Supported frequencies include:
+WEEKLY
+BIWEEKLY
+MONTHLY
+TWICE_MONTHLY
+CUSTOM
+Working-day adjustment:
+PREVIOUS_WORKING_DAY
+NEXT_WORKING_DAY
+NO_ADJUSTMENT
+The salary is not considered overdue when the first possible date passes.
+It becomes overdue only after the final applicable expected payday passes without confirmation.
+@startuml
+
+start
+
+:Determine salary period;
+:Generate possible payday dates;
+
+repeat
+  :Reach next possible payday;
+  :Ask user whether salary arrived;
+
+  if (Received?) then (yes)
+    :Record actual amount;
+    :Record actual received date;
+    :Mark salary received;
+    :Load approved Financial Plan;
+    :Start payday routine;
+    stop
+  endif
+
+repeat while (More possible dates?) is (yes)
+
+:Mark expected salary overdue;
+:Notify user;
+
+stop
+
+@enduml
+Once received:
+Salary confirmation
+        ↓
+Record actual income
+        ↓
+Retrieve approved plan
+        ↓
+Show savings actions
+        ↓
+Show investment actions
+        ↓
+Show debt actions
+        ↓
+Show goal contributions
+        ↓
+User performs transactions externally
+        ↓
+User confirms actions
+        ↓
+Update records
+        ↓
+Recalculate progress
+        ↓
+Evaluate achievements
+Planned contribution status:
+UPCOMING
+DUE
+PARTIALLY_COMPLETED
+COMPLETED
+SKIPPED
+OVERDUE
+Actual salary values—not expected salary values—feed authoritative monthly cash-flow calculations once confirmed.
+________________________________________
+8. Savings
+SavingsAccount
+- id
+- financial_space_id
+- name
+- currency
+- current_balance
+- target_amount?
+- target_date?
+- annual_interest_rate?
+- planned_monthly_contribution?
+- linked_goal_id?
+- opened_at
+- status
+Savings transactions preserve contribution and withdrawal history.
+________________________________________
+9. Fixed Deposits
+FixedDeposit
+- id
+- financial_space_id
+- name
+- institution_name
+- currency
+- principal
+- annual_interest_rate
+- interest_method
+- compounding_frequency
+- start_date
+- maturity_date
+- expected_maturity_value
+- actual_maturity_value?
+- status
+Interest methods:
+SIMPLE
+COMPOUND
+Simple interest:
+A = P(1 + rt)
+Compound interest:
+A = P(1 + r/n)^(nt)
+These calculations belong to financial-engine, never the AI module.
+________________________________________
+10. Liabilities
+Liability
+- id
+- financial_space_id
+- liability_type
+- name
+- currency
+- original_amount
+- outstanding_balance
+- annual_interest_rate
+- monthly_payment
+- start_date
+- expected_payoff_date
+- status
+Repayments are stored separately so debt history can be reconstructed.
+Net worth:
+Net Worth = Total Assets - Total Liabilities
+________________________________________
+11. Investments
+Built-in types:
+STOCK
+BOND
+TREASURY_BILL
+MUTUAL_FUND
+ETF
+FIXED_INCOME
+REAL_ESTATE
+BUSINESS_INVESTMENT
+CRYPTOCURRENCY
+OTHER
+Investment:
+Investment
+- id
+- financial_space_id
+- account_id
+- investment_type
+- name
+- currency
+- quantity?
+- cost_basis
+- start_date
+- maturity_date?
+- status
+Investment transaction types:
+BUY
+CONTRIBUTION
+SELL
+WITHDRAWAL
+DIVIDEND
+INTEREST
+FEE
+TAX
+Investment valuation:
+InvestmentValuation
+- investment_id
+- valuation_date
+- market_value
+- currency
+- valuation_method
+- created_by
+Valuation methods:
+MANUAL
+QUANTITY_X_PRICE
+CONTRACTUAL
+Cash contributions must remain separate from investment gains.
+________________________________________
+12. Portfolio Analytics Engine
+Analytics operate on transactions, valuations and historical FX rates.
+The engine calculates:
+•	absolute return;
+•	percentage return;
+•	annualized return;
+•	TWR;
+•	XIRR;
+•	asset allocation;
+•	concentration;
+•	diversification;
+•	volatility;
+•	contribution analysis;
+•	investment income;
+•	maturity exposure;
+•	historical comparisons;
+•	goal alignment;
+•	projections.
+TWR divides performance into valuation periods and geometrically links period returns:
+TWR = Π(1 + period_return) - 1
+XIRR solves:
+Σ CF_i / (1 + r)^((date_i-date_0)/365) = 0
+Use a bounded numerical solver with:
+•	validated cash-flow inputs;
+•	maximum iterations;
+•	convergence tolerance;
+•	fallback failure state;
+•	unit tests against independently verified examples.
+Do not fabricate an XIRR when convergence fails.
+Initial risk analytics include volatility, concentration and diversification.
+Sharpe ratio, beta, alpha and VaR are postponed until dependable benchmark/risk-free/market datasets exist.
+Maturity buckets:
+0–30 days
+31–90 days
+91–180 days
+181–365 days
+> 1 year
+Every important metric supports:
+How is this calculated?
+Data used
+Measurement period
+Limitations
+Data freshness
+When insufficient information exists, return:
+NOT_ENOUGH_DATA
+rather than inventing a result.
+________________________________________
+13. Financial Goals
+Goal types include:
+EMERGENCY_FUND
+EDUCATION
+HOME_PURCHASE
+VEHICLE
+BUSINESS_CAPITAL
+DEBT_PAYOFF
+RETIREMENT
+INVESTMENT_TARGET
+TRAVEL
+CUSTOM
+Goal:
+- id
+- financial_space_id
+- dependant_id?
+- type
+- name
+- currency
+- target_amount
+- current_amount
+- target_date
+- priority
+- planned_monthly_contribution
+- status
+________________________________________
+14. Scenario Engine
+Inputs:
+starting_capital
+recurring_contribution
+contribution_frequency
+expected_annual_return
+duration
+inflation_rate?
+annual_contribution_growth?
+Output includes nominal and inflation-adjusted values.
+Expected return is always represented as an assumption, not a guaranteed result.
+Flow:
+Create Scenario
+      ↓
+Set assumptions
+      ↓
+Calculate projection
+      ↓
+Compare alternatives
+      ↓
+Use This as My Plan
+      ↓
+Create Goal + Financial Plan
+      ↓
+Track actual results
+The system can therefore compare:
+Projected → Planned → Actual
+________________________________________
+15. AI Recommendation Architecture
+Raw financial records should not simply be dumped into an LLM.
+@startuml
+
+database "Financial Records" as Records
+component "Financial Engine" as Engine
+component "Profile Snapshot Builder" as Snapshot
+component "Financial Rules Engine" as Rules
+component "AI Orchestrator" as AI
+cloud "LLM Provider" as LLM
+component "Recommendation Validator" as Validator
+component "Financial Plan" as Plan
+
+Records --> Engine
+Engine --> Snapshot
+Snapshot --> Rules
+Rules --> AI
+Snapshot --> AI
+AI --> LLM
+LLM --> AI
+AI --> Validator
+Validator --> Plan
+
+@enduml
+The backend creates a structured FinancialProfileSnapshot containing only the information necessary for recommendation generation.
+Example:
+monthly_income
+monthly_expenses
+savings_rate
+net_worth
+liability_summary
+emergency_fund_months
+goal_progress
+risk_profile
+portfolio_allocation
+concentration_metrics
+maturity_exposure
+recent_behavior_patterns
+data_freshness
+Financial rules are configurable:
+FinancialRule
+- code
+- market
+- metric
+- operator
+- threshold
+- severity
+- enabled
+Rule priority:
+HIGH
+MEDIUM
+LOW
+The AI receives detected facts and generates possible strategies and explanations.
+It does not independently calculate authoritative financial metrics.
+Users can:
+SELECT
+MODIFY
+REJECT
+REGENERATE
+Recommendation feedback:
+HELPFUL
+NOT_HELPFUL
+NOT_APPLICABLE
+Feedback may influence future presentation/preferences but must never silently modify financial calculations or deterministic rules.
+Automatic reviews occur monthly, with additional on-demand generation.
+AI-provider outages must not prevent users from accessing their financial records, dashboards or deterministic analytics.
+________________________________________
+16. Household Finance
+Percentage ownership is supported.
+Example:
+Joint Investment
+Ama: 60%
+Kojo: 40%
+Total: 100%
+Ownership validation requires the active ownership percentages to total 100%.
+Selective sharing allows Personal information to be shown to a Household without transferring ownership.
+SharedFinancialItem
+- source_space_id
+- source_entity_type
+- source_entity_id
+- target_household_space_id
+- shared_by_user_id
+- permission
+- created_at
+- revoked_at?
+Permissions:
+BALANCE_ONLY
+SUMMARY
+FULL_READ
+Household members never receive write access to another user's Personal financial record through sharing.
+Sharing is revocable.
+The Household dashboard explicitly separates:
+Shared Household Finances
+
+from
+
+Personal Information Shared With Household
+The two must never be silently merged.
+________________________________________
+17. Multi-Currency
+Every financial record preserves its original currency.
+Every Financial Space has a base currency.
+Initial default:
+GHS
+Exchange rates are stored historically:
+ExchangeRate
+- base_currency
+- quote_currency
+- rate
+- rate_date
+- source
+- is_manual
+- created_at
+Historical reports use the applicable historical rate.
+They must not recalculate old net worth using today's FX rate.
+Manual FX overrides are permitted but audited.
+If the FX provider is unavailable:
+Use latest valid stored rate
++
+display rate timestamp
++
+display stale-data indication
+Never invent an exchange rate.
+________________________________________
+18. External Investment Discovery
+The application may direct users to verified external investment/market information providers.
+It does not execute transactions or imply that an external product is suitable for the user.
+InvestmentProvider
+- id
+- name
+- country
+- provider_type
+- official_url
+- regulatory_status
+- supported_investment_types
+- status
+- last_verified_at
+- next_review_at
+Lifecycle:
+PENDING
+  ↓
+VERIFIED
+  ↓
+STALE
+  ↓
+DISABLED
+Only verified, non-stale providers appear to users.
+URLs come from the administrator-controlled provider directory.
+The AI must never invent investment-provider URLs.
+________________________________________
+19. Gamification
+Progression:
+Beginner
+   ↓
+Builder
+   ↓
+Planner
+   ↓
+Investor
+   ↓
+Wealth Builder
+Achievements reward healthy behavior rather than wealth.
+Examples:
+First Budget
+First Investment
+3-Month Saving Streak
+6-Month Saving Streak
+12-Month Saving Streak
+Emergency Fund — 1 Month
+Goal — 25%
+Goal — 50%
+Goal — 75%
+Goal — 100%
+Debt Reduced — 25%
+Monthly Review Completed
+Portfolio Diversification
+Never reward:
+•	excessive trading;
+•	taking greater investment risk;
+•	borrowing to invest;
+•	maintaining a large balance merely because the user is wealthier.
+Achievement evaluation is event-driven.
+________________________________________
+20. Notifications
+Channels:
+IN_APP
+EMAIL
+WEB_PUSH
+Notifications include:
+•	possible payday reached;
+•	salary confirmation;
+•	salary overdue;
+•	savings contribution;
+•	investment contribution;
+•	debt repayment;
+•	investment maturity;
+•	fixed-deposit maturity;
+•	goal deadline;
+•	budget threshold;
+•	monthly financial review;
+•	new AI insight;
+•	achievements;
+•	permitted household events.
+Users control channel and frequency preferences.
+Personal notifications must not leak into household contexts.
+________________________________________
+21. Security
+Authentication supports:
+•	email/password;
+•	email verification;
+•	password reset;
+•	optional Google identity provider;
+•	TOTP MFA;
+•	recovery codes;
+•	session/device management;
+•	session revocation.
+Authorization is enforced at both user and Financial Space level.
+Every space-scoped request must verify membership and permission before loading or mutating financial information.
+Important events are audited:
+LOGIN
+MFA_CHANGE
+PASSWORD_CHANGE
+HOUSEHOLD_INVITE
+HOUSEHOLD_MEMBER_REMOVAL
+ROLE_CHANGE
+INVESTMENT_EDIT
+OWNERSHIP_CHANGE
+FX_OVERRIDE
+PLAN_APPROVAL
+PLAN_REJECTION
+DATA_EXPORT
+ACCOUNT_DELETION
+Audit event:
+- id
+- actor_user_id
+- financial_space_id?
+- action
+- entity_type
+- entity_id
+- timestamp
+- ip_address
+- user_agent
+- metadata
+Audit records are not editable through normal application APIs.
+Never log:
+•	passwords;
+•	password hashes unnecessarily;
+•	MFA secrets;
+•	recovery codes;
+•	access/refresh tokens;
+•	complete AI prompts containing sensitive financial information.
+Encryption is required in transit and at rest.
+________________________________________
+22. Data Protection
+Production PostgreSQL should be managed where practical.
+Requirements:
+•	encrypted backups;
+•	point-in-time recovery;
+•	scheduled snapshots;
+•	restore testing;
+•	defined RPO/RTO;
+•	environment isolation;
+•	user data export;
+•	account deletion/anonymization.
+Account deletion:
+Request deletion
+      ↓
+Reauthenticate
+      ↓
+Confirm
+      ↓
+Revoke sessions
+      ↓
+Evaluate household-owned/shared data
+      ↓
+Delete or anonymize eligible personal records
+      ↓
+Write audit record
+A user's deletion must not accidentally destroy legitimately shared Household records owned by other members.
+________________________________________
+23. Background Processing
+BullMQ workers process:
+monthly AI reviews
+payday reminders
+maturity reminders
+recurring entries
+notifications
+achievement evaluation
+streak evaluation
+portfolio snapshots
+FX retrieval
+exports
+reports
+Jobs must be idempotent where possible.
+Retries use bounded exponential backoff.
+Permanent failures are retained for operational review.
+Correlation IDs propagate:
+API → Queue → Worker → External Provider
+________________________________________
+24. Object Storage
+S3-compatible storage holds:
+•	profile images;
+•	generated exports;
+•	generated reports;
+•	future user documents.
+Objects are private by default.
+Access uses short-lived signed URLs.
+________________________________________
+25. PWA
+The MVP frontend is a responsive Progressive Web App.
+It supports:
+•	phones;
+•	tablets;
+•	desktop;
+•	installation to supported devices;
+•	web push where supported;
+•	app-like navigation;
+•	basic offline shell/error handling.
+Primary navigation:
+Dashboard
+Money
+Portfolio
+Plan
+Insights
+Money:
+Income
+Expenses
+Savings
+Liabilities
+Portfolio:
+Investments
+Fixed Deposits
+Plan:
+Budgets
+Goals
+Scenarios
+Financial Plans
+Insights:
+Analytics
+AI Recommendations
+Achievements
+Household switching, notifications, profile/settings and administration live outside the primary navigation.
+Native mobile apps can later consume the same API.
+________________________________________
+Implementation
+Implementation uses vertical slices.
+Every slice includes:
+Database migration
+      ↓
+Backend domain/service
+      ↓
+REST API
+      ↓
+Authorization
+      ↓
+Validation
+      ↓
+Frontend
+      ↓
+Unit tests
+      ↓
+Integration tests
+      ↓
+E2E tests
+      ↓
+Staging verification
+Phase 1 — Foundation
+Implement:
+•	monorepo;
+•	Next.js PWA;
+•	NestJS API;
+•	NestJS worker;
+•	PostgreSQL;
+•	Prisma;
+•	Redis/BullMQ;
+•	Docker Compose;
+•	authentication;
+•	email verification;
+•	Personal Space creation;
+•	authorization framework;
+•	audit framework;
+•	CI/CD;
+•	staging;
+•	health checks;
+•	structured logging.
+Acceptance:
+A user can register, verify their email, sign in and access a private Personal Financial Space

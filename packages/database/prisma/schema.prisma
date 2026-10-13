@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client"
+  output = "../generated"
+}
+datasource db {
+  provider = "postgresql"
+}
+enum SpaceType {
+  PERSONAL
+  HOUSEHOLD
+}
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+enum TokenPurpose {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique
+  name String
+  passwordHash String
+  emailVerifiedAt DateTime? @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  memberships Membership[]
+  sessions Session[]
+  tokens AuthToken[]
+  personalSpace FinancialSpace? @relation("PersonalOwner")
+}
+model FinancialSpace {
+  id String @id @default(uuid()) @db.Uuid
+  name String
+  type SpaceType
+  baseCurrency String @default("GHS") @db.Char(3)
+  personalOwnerId String? @unique @db.Uuid
+  personalOwner User? @relation("PersonalOwner", fields: [personalOwnerId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  memberships Membership[]
+}
+model Membership {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  spaceId String @db.Uuid
+  role Role
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  @@unique([userId, spaceId])
+}
+model Session {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  tokenHash String @unique
+  expiresAt DateTime @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+model AuthToken {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  tokenHash String @unique
+  purpose TokenPurpose
+  expiresAt DateTime @db.Timestamptz
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, purpose])
+}
+model AuditEvent {
+  id String @id @default(uuid()) @db.Uuid
+  actorUserId String? @db.Uuid
+  spaceId String? @db.Uuid
+  action String
+  createdAt DateTime @default(now()) @db.Timestamptz
+  @@index([actorUserId, createdAt])
+}
+model EmailOutbox {
+  id String @id @default(uuid()) @db.Uuid
+  recipient String
+  subject String
+  body String
+  createdAt DateTime @default(now()) @db.Timestamptz
+  sentAt DateTime? @db.Timestamptz
+  @@index([sentAt, createdAt])
+}

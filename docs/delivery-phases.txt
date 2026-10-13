@@ -1,0 +1,330 @@
+Phase 2 — Personal Finance
+Implement:
+•	categories;
+•	income;
+•	flexible salary schedules;
+•	multiple possible paydays;
+•	salary confirmation;
+•	expenses;
+•	recurring records;
+•	monthly budgets;
+•	dashboard;
+•	net cash flow.
+Acceptance:
+A user can answer:
+Where did my money go this month?
+Phase 3 — Wealth Foundation
+Implement:
+•	savings;
+•	liabilities;
+•	repayments;
+•	goals;
+•	historical snapshots;
+•	net worth;
+•	payday financial routines.
+Acceptance:
+A user can see assets, liabilities, net worth and progress toward financial goals.
+Phase 4 — Investments
+Implement:
+•	investment accounts;
+•	investment types;
+•	transactions;
+•	manual valuation;
+•	calculated valuation;
+•	fixed deposits;
+•	maturity tracking;
+•	valuation history.
+Acceptance:
+A user can reconstruct their portfolio from transactions and valuations.
+Phase 5 — Portfolio Intelligence
+Implement:
+•	return calculations;
+•	TWR;
+•	XIRR;
+•	allocation;
+•	concentration;
+•	diversification;
+•	volatility;
+•	contribution analysis;
+•	investment income;
+•	maturity exposure;
+•	historical comparison;
+•	explainability.
+Acceptance:
+All deterministic analytics pass known-value test datasets.
+Phase 6 — Scenario Planning
+Implement:
+•	scenario creation;
+•	projection engine;
+•	inflation;
+•	contribution growth;
+•	comparisons;
+•	scenario-to-plan conversion.
+Acceptance:
+A user can model alternatives and convert a chosen scenario into a trackable plan.
+Phase 7 — AI Financial Intelligence
+Implement:
+•	profile snapshots;
+•	financial rules;
+•	AI provider abstraction;
+•	recommendation generation;
+•	multiple strategies;
+•	feedback;
+•	monthly reviews;
+•	on-demand insights;
+•	strategy-to-plan conversion.
+Acceptance:
+AI recommendations contain only facts supplied by validated system context and cannot alter deterministic calculations.
+Phase 8 — Household Finance
+Implement:
+•	Household Spaces;
+•	invitations;
+•	roles;
+•	dependants;
+•	shared assets/liabilities;
+•	percentage ownership;
+•	selective Personal sharing;
+•	household goals;
+•	household budgets;
+•	household net worth.
+Acceptance:
+Joining a household exposes no Personal financial information without explicit sharing.
+Phase 9 — Engagement
+Implement:
+•	achievements;
+•	levels;
+•	streaks;
+•	notification preferences;
+•	email;
+•	in-app notifications;
+•	PWA push;
+•	payday reminders;
+•	maturity reminders.
+Acceptance:
+Financial routines work without encouraging unnecessary risk or excessive financial activity.
+Phase 10 — Currency & Discovery
+Implement:
+•	currencies;
+•	historical FX;
+•	base currency;
+•	display currency;
+•	FX overrides;
+•	provider directory;
+•	provider verification lifecycle.
+Acceptance:
+Historical reports remain reproducible even when current FX rates change.
+Phase 11 — Production Hardening
+Implement:
+•	TOTP MFA;
+•	recovery codes;
+•	rate limiting;
+•	session/device management;
+•	security testing;
+•	dependency scanning;
+•	backup/PITR;
+•	restore tests;
+•	retry/dead-letter handling;
+•	monitoring;
+•	admin operations;
+•	export;
+•	deletion;
+•	sensitive-log review.
+Acceptance:
+Core finance functionality remains usable during AI-provider failure, and existing historical data remains understandable during FX-provider failure.
+________________________________________
+CI/CD
+Pipeline:
+Lint
+ ↓
+Typecheck
+ ↓
+Unit Tests
+ ↓
+Integration Tests
+ ↓
+Build
+ ↓
+Migration Validation
+ ↓
+Security/Dependency Checks
+ ↓
+Docker Image
+ ↓
+Deploy Staging
+ ↓
+Smoke Tests
+ ↓
+Manual Production Approval
+ ↓
+Production
+ ↓
+Health Verification
+Production database schemas must only change through version-controlled migrations.
+Do not manually edit production schema.
+Environments:
+LOCAL
+STAGING
+PRODUCTION
+Data and credentials remain strictly isolated.
+________________________________________
+Observability
+Monitor:
+•	API latency;
+•	API error rate;
+•	worker failures;
+•	queue backlog;
+•	PostgreSQL health;
+•	Redis health;
+•	object-storage failures;
+•	AI failures;
+•	AI cost/token usage;
+•	notification failures;
+•	FX failures;
+•	scheduled-job failures;
+•	backup failures.
+A lightweight administration interface provides operational visibility without automatically granting administrators access to users' salaries, balances, debts, investments or complete AI prompts.
+________________________________________
+Milestones
+M1 — Foundation
+Deliver secure PWA/API/worker infrastructure, PostgreSQL, Redis, authentication, Personal Spaces, authorization, auditing, CI/CD and staging.
+Exit criterion: registration-to-private-dashboard flow works end-to-end.
+M2 — Money Management
+Deliver income, flexible payday scheduling, expenses, recurring transactions, budgets, savings, liabilities, goals and net worth.
+Exit criterion: users can understand monthly cash flow and current financial position.
+M3 — Wealth & Portfolio
+Deliver investments, fixed deposits, transaction history, valuations, maturities and historical portfolio tracking.
+Exit criterion: portfolio state can be reconstructed and explained from stored records.
+M4 — Financial Intelligence
+Deliver portfolio analytics, scenarios, rules, AI strategies and editable Financial Plans.
+Exit criterion: deterministic analytics pass known datasets and AI cannot override them.
+M5 — Family & Engagement
+Deliver households, dependants, selective sharing, ownership, gamification, payday routines, notifications, multi-currency and external discovery.
+Exit criterion: collaborative finance works without violating Personal-space privacy.
+M6 — Production Readiness
+Deliver MFA, backups, restore tests, observability, administration, data export/deletion, security hardening and production deployment.
+Exit criterion: production-readiness checklist and recovery exercises pass.
+________________________________________
+Gathering Results
+Evaluation covers financial behavior, engagement, calculation correctness, AI usefulness, reliability and security.
+Financial-Health Indicators
+Measure changes over time in:
+•	savings rate;
+•	emergency-fund coverage;
+•	debt burden;
+•	net worth;
+•	goal trajectory;
+•	budget adherence;
+•	planned-vs-actual contributions;
+•	portfolio-record completeness.
+These are observed outcomes.
+The product must not claim that use of the application caused financial improvement without evidence supporting such a conclusion.
+Engagement
+Measure:
+•	monthly reviews completed;
+•	payday confirmations;
+•	salary-record completeness;
+•	financial actions recorded after payday;
+•	savings contribution consistency;
+•	scenario usage;
+•	Financial Plan completion;
+•	streaks;
+•	goal updates;
+•	household participation;
+•	retention.
+Payday Effectiveness
+Measure:
+actual salaries received within configured payday set/window
+salary confirmation rate
+time from receipt to confirmation
+payday-plan review rate
+planned contribution completion
+overdue salary confirmations
+Use this information to suggest schedule changes when actual payment behavior consistently differs.
+Never silently alter a user's payday configuration.
+AI Quality
+Measure:
+HELPFUL
+NOT_HELPFUL
+NOT_APPLICABLE
+
+strategy selection rate
+strategy modification rate
+strategy rejection rate
+invalid-output rate
+generation failure rate
+cost per review
+AI output should also be evaluated for whether it introduces facts absent from the validated profile snapshot.
+Calculation Quality
+Maintain independent expected-result datasets for:
+•	net worth;
+•	savings rate;
+•	simple interest;
+•	compound interest;
+•	projections;
+•	inflation adjustment;
+•	FX conversions;
+•	TWR;
+•	XIRR;
+•	volatility;
+•	portfolio allocation;
+•	concentration;
+•	maturity analysis.
+Financial-engine changes cannot deploy when these regression tests fail.
+Data Freshness
+Financial information receives freshness indicators such as:
+UP_TO_DATE
+UPDATE_RECOMMENDED
+POTENTIALLY_STALE
+AI explanations must respect freshness.
+Example:
+This analysis uses an investment valuation last updated 90 days ago.
+Update the valuation for a more current portfolio analysis.
+Reliability
+Monitor:
+availability
+API latency
+API error rate
+background-job failure rate
+notification-delivery rate
+AI-provider failure rate
+FX-provider failure rate
+database health
+backup success
+restore-test success
+Security
+Monitor:
+•	suspicious login activity;
+•	repeated authentication failures;
+•	authorization failures;
+•	MFA events;
+•	unusual session activity;
+•	administrative operations;
+•	dependency vulnerabilities;
+•	backup/recovery status.
+Financial values must not be unnecessarily copied into monitoring systems.
+________________________________________
+Final Architecture Principle
+The platform should help users understand and organize their finances without pretending that an AI model is an accountant, investment exchange or autonomous financial manager.
+The authoritative flow remains:
+USER FINANCIAL DATA
+        ↓
+DETERMINISTIC FINANCIAL ENGINE
+        ↓
+CALCULATED FACTS
+        ↓
+CONFIGURABLE FINANCIAL RULES
+        ↓
+AI EXPLANATION + POSSIBLE STRATEGIES
+        ↓
+USER DECISION
+        ↓
+APPROVED FINANCIAL PLAN
+        ↓
+PAYDAY / RECURRING ROUTINES
+        ↓
+ACTUAL USER ACTIONS
+        ↓
+TRACKING + ANALYTICS
+        ↓
+NEXT REVIEW
+This separation makes the MVP implementable by a small team while preserving a path toward more sophisticated analytics, additional countries, native mobile applications and future integrations.

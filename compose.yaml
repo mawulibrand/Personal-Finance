@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:18.0
+    environment:
+      POSTGRES_USER: finance
+      POSTGRES_PASSWORD: finance_local
+      POSTGRES_DB: finance
+    ports: ['127.0.0.1:5432:5432']
+    volumes: ['postgres-data:/var/lib/postgresql']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U finance -d finance']
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:8.2.2
+    ports: ['127.0.0.1:6379:6379']
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes: ['redis-data:/data']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
+  mailpit:
+    image: axllent/mailpit:v1.27.8
+    ports: ['127.0.0.1:1025:1025', '127.0.0.1:8025:8025']
+volumes:
+  postgres-data:
+  redis-data:
