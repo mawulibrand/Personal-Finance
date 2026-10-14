@@ -24,6 +24,6 @@
 
 Dependency installation repeatedly failed with npm registry DNS/connection errors, including escalated attempts. Consequently there is no generated lockfile, Prisma client, full typecheck, application build, or browser test result. Docker and PostgreSQL executables were not available, so migrations and integration tests were not run locally. These are verification limits, not successful checks.
 
-Once registry connectivity is restored, install dependencies, commit the generated lockfile after reviewing it, start the local services, and follow `local-development.md`. CI and Docker intentionally require that lockfile. The first milestone is not accepted until the registration-to-private-dashboard flow and privacy integration tests run successfully.
+Registry access recovered on October 14, 2026, and `pnpm-lock.yaml` was generated. CI actions were upgraded to v6 and the runner pinned to Ubuntu 24.04. Full application builds, migration execution, and integration/browser verification remain pending. Install the locked dependencies, start local services, and follow `local-development.md`. The first milestone is not accepted until the registration-to-private-dashboard flow and privacy integration tests run successfully.
 
 Staging deployment, full financial-domain authorization roles, and the remaining foundation operations are future work. No site, infrastructure, or production service has been deployed.

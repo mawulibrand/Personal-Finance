@@ -34,6 +34,6 @@ Email delivery is at-least-once. Queue jobs contain only the outbox ID; failed j
 
 Production and staging deployment, distributed rate limiting, session/device management UI, operational dashboards, automated restore checks, and full browser/integration coverage are not complete. API readiness currently checks PostgreSQL; queue and SMTP health require separate operational monitoring. Do not treat this slice as production-ready.
 
-The initial machine's npm registry connection failed during installation, so no lockfile was generated. Complete `pnpm install` and retain `pnpm-lock.yaml` before running the Docker build or CI, both of which intentionally require a frozen lockfile. Integration tests are provided but require a running PostgreSQL database and built API; do not run the email worker during the identity tests, because they inspect pending verification messages.
+The initial dependency download failed, but registry access later recovered and `pnpm-lock.yaml` was generated. Run `pnpm install --frozen-lockfile` to install the recorded dependencies. CI and Docker builds also require this lockfile. Integration tests require a running PostgreSQL database and built API; do not run the email worker during the identity tests, because they inspect pending verification messages.
 
 Configure production HTTPS, real SMTP credentials, private network access to PostgreSQL/Redis, encrypted managed storage, environment-specific secrets, and a reverse proxy before deployment. No service is deployed by the local setup.
