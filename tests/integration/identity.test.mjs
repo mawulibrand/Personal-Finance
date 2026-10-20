@@ -4,8 +4,9 @@ import { createDatabase } from '../../packages/database/dist/index.js';
 const db = createDatabase(process.env.DATABASE_URL);
 after(async () => { await db.$disconnect(); });
 const origin = 'http://localhost:3000';
+const apiOrigin = process.env.API_ORIGIN ?? 'http://localhost:4000';
 async function request(path, body, cookie) {
-  const response = await fetch(`http://localhost:4000/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { Origin: origin, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(`${apiOrigin}/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { Origin: origin, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: response.status, body: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
 }
 async function emailToken(email, subject) {
@@ -86,6 +87,31 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(expenseList.body.records.length, 1);
   assert.equal(expenseList.body.records[0].description, 'Weekly pet food');
   assert.equal((await request(expensesPath, { categoryId: customCategory.body.id, amount: '2', spentAt: receivedDate })).status, 401);
+  const savingsPath = `spaces/${spaces.body[0].id}/savings-accounts`;
+  assert.equal((await request(savingsPath)).status, 401);
+  const savingsAccount = await request(savingsPath, {
+    name: 'Emergency savings', provider: 'Local Bank', currencyCode: 'ghs', openingBalance: '100.00', openedAt: receivedDate,
+  }, login.cookie);
+  assert.equal(savingsAccount.status, 201);
+  assert.equal(savingsAccount.body.balance, '100');
+  assert.equal(savingsAccount.body.currencyCode, 'GHS');
+  const savingsTransactionsPath = `${savingsPath}/${savingsAccount.body.id}/transactions`;
+  assert.equal((await request(savingsTransactionsPath, { type: 'DEPOSIT', amount: '50.25', transactionDate: receivedDate, description: 'Monthly savings' }, login.cookie)).status, 201);
+  assert.equal((await request(savingsTransactionsPath, { type: 'WITHDRAWAL', amount: '20', transactionDate: receivedDate }, login.cookie)).status, 201);
+  assert.equal((await request(savingsTransactionsPath, { type: 'WITHDRAWAL', amount: '131', transactionDate: receivedDate }, login.cookie)).status, 400);
+  const savings = await request(savingsPath, undefined, login.cookie);
+  assert.equal(savings.status, 200);
+  assert.equal(savings.body.accounts[0].balance, '130.25');
+  assert.equal(savings.body.accounts[0].transactions.length, 2);
+  assert.equal(savings.body.totalsByCurrency.GHS, '130.25');
+  const concurrentWithdrawals = await Promise.all([
+    request(savingsTransactionsPath, { type: 'WITHDRAWAL', amount: '100', transactionDate: receivedDate }, login.cookie),
+    request(savingsTransactionsPath, { type: 'WITHDRAWAL', amount: '100', transactionDate: receivedDate }, login.cookie),
+  ]);
+  assert.deepEqual(concurrentWithdrawals.map(result => result.status).sort(), [201, 400]);
+  assert.equal((await request(savingsPath, undefined, login.cookie)).body.accounts[0].balance, '30.25');
+  const savingsBeforeOpened = await request(savingsTransactionsPath, { type: 'DEPOSIT', amount: '1', transactionDate: '2000-01-01' }, login.cookie);
+  assert.equal(savingsBeforeOpened.status, 400);
   const recurringPath = `spaces/${spaces.body[0].id}/recurring-records`;
   const recurringExpense = await request(recurringPath, {
     name: 'Monthly pet food', flow: 'EXPENSE', amount: '30', frequency: 'MONTHLY', startDate: receivedDate, categoryId: customCategory.body.id,
@@ -136,10 +162,12 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(incomePath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(recurringPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(budgetsPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(savingsPath, undefined, bob.cookie)).status, 404);
   const bobSpaces = await request('spaces', undefined, bob.cookie);
+  assert.equal((await request(`spaces/${bobSpaces.body[0].id}/savings-accounts/${savingsAccount.body.id}/transactions`, { type: 'DEPOSIT', amount: '1', transactionDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/expenses`, { categoryId: customCategory.body.id, amount: '3', spentAt: receivedDate }, bob.cookie)).status, 400);
   assert.equal((await request(expensesPath, undefined, bob.cookie)).status, 404);
-  const csrf = await fetch('http://localhost:4000/auth/logout', { method: 'POST', headers: { Origin: 'http://untrusted.example', Cookie: login.cookie, 'Content-Type': 'application/json' }, body: '{}' });
+  const csrf = await fetch(`${apiOrigin}/auth/logout`, { method: 'POST', headers: { Origin: 'http://untrusted.example', Cookie: login.cookie, 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(csrf.status, 403);
   await request('auth/forgot-password', { email });
   const resetToken = await emailToken(email, 'Reset your password');

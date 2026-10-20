@@ -46,6 +46,10 @@ enum RecurrenceFrequency {
   MONTHLY
   YEARLY
 }
+enum SavingsTransactionType {
+  DEPOSIT
+  WITHDRAWAL
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -60,6 +64,8 @@ model User {
   expenseRecords ExpenseRecord[]
   budgets Budget[]
   recurringRecords RecurringRecord[]
+  savingsAccounts SavingsAccount[]
+  savingsTransactions SavingsTransaction[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -77,6 +83,7 @@ model FinancialSpace {
   expenseRecords ExpenseRecord[]
   budgets Budget[]
   recurringRecords RecurringRecord[]
+  savingsAccounts SavingsAccount[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -261,4 +268,33 @@ model BudgetAllocation {
   category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   @@unique([budgetId, categoryId])
   @@index([categoryId])
+}
+model SavingsAccount {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  provider String?
+  currencyCode String @default("GHS") @db.Char(3)
+  openingBalance Decimal @default(0) @db.Decimal(19, 4)
+  openedAt DateTime @db.Date
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  transactions SavingsTransaction[]
+  @@index([spaceId, createdAt])
+}
+model SavingsTransaction {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @db.Uuid
+  type SavingsTransactionType
+  amount Decimal @db.Decimal(19, 4)
+  transactionDate DateTime @db.Date
+  description String?
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  account SavingsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([accountId, transactionDate, createdAt])
 }

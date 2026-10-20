@@ -8,6 +8,7 @@ import workspaceStyles from './workspace.module.css';
 import expenseStyles from './expenses.module.css';
 import recurringStyles from './recurring.module.css';
 import budgetStyles from './budgets.module.css';
+import savingsStyles from './savings.module.css';
 export async function api(path: string, body?: unknown) {
   const response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   const result = await response.json().catch(() => ({ message: 'The service is unavailable. Please try again.' }));
@@ -69,6 +70,7 @@ const workspaceLinks = [
   { href: '/dashboard', label: 'Overview' },
   { href: '/income', label: 'Income' },
   { href: '/expenses', label: 'Expenses' },
+  { href: '/savings', label: 'Savings' },
   { href: '/recurring', label: 'Recurring' },
   { href: '/budgets', label: 'Budgets' },
   { href: '/categories', label: 'Categories' },
@@ -547,6 +549,114 @@ export function Budgets() {
         const percent = Number(allocation.limit) > 0 ? Math.max(0, Math.min(100, Number(allocation.spent) / Number(allocation.limit) * 100)) : 0;
         return <li key={allocation.id}><div className={budgetStyles.allocationHeading}><strong>{allocation.category.name}</strong><span>{money(allocation.spent)} of {money(allocation.limit)}</span></div><progress value={percent} max="100" aria-label={`${allocation.category.name} budget used`} /><small>{Number(allocation.remaining) < 0 ? `${money(String(-Number(allocation.remaining)))} over budget` : `${money(allocation.remaining)} remaining`}</small></li>;
       })}</ul>}
+    </section>
+  </section></main>;
+}
+
+type SavingsTransaction = {
+  id: string;
+  type: 'DEPOSIT' | 'WITHDRAWAL';
+  amount: string;
+  transactionDate: string;
+  description: string | null;
+};
+type SavingsAccount = {
+  id: string;
+  name: string;
+  provider: string | null;
+  currencyCode: string;
+  openingBalance: string;
+  openedAt: string;
+  balance: string;
+  transactions: SavingsTransaction[];
+};
+type SavingsOverview = { baseCurrency: string; totalsByCurrency: Record<string, string>; accounts: SavingsAccount[] };
+export function Savings() {
+  const [spaceId, setSpaceId] = useState('');
+  const [data, setData] = useState<SavingsOverview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/savings-accounts`);
+      if (active) { setSpaceId(spaces[0].id); setData(result); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load savings accounts.'); }
+  })(); return () => { active = false; }; }, []);
+  async function reload() {
+    if (spaceId) setData(await api(`spaces/${spaceId}/savings-accounts`));
+  }
+  async function createAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      name: String(form.get('name') ?? '').trim(),
+      currencyCode: String(form.get('currencyCode') ?? data?.baseCurrency ?? 'GHS').trim().toUpperCase(),
+      openingBalance: String(form.get('openingBalance') ?? '0').trim() || '0',
+      openedAt: String(form.get('openedAt') ?? localDate()),
+    };
+    const provider = String(form.get('provider') ?? '').trim();
+    if (provider) payload.provider = provider;
+    try { await api(`spaces/${spaceId}/savings-accounts`, payload); await reload(); formElement.reset(); setMessage('Savings account added.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this account.'); }
+    finally { setBusy(false); }
+  }
+  async function recordTransaction(event: FormEvent<HTMLFormElement>, account: SavingsAccount) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const type = String(form.get('type') ?? 'DEPOSIT') as SavingsTransaction['type'];
+    const payload: Record<string, string> = {
+      type,
+      amount: String(form.get('amount') ?? '').trim(),
+      transactionDate: String(form.get('transactionDate') ?? ''),
+    };
+    const description = String(form.get('description') ?? '').trim();
+    if (description) payload.description = description;
+    try {
+      await api(`spaces/${spaceId}/savings-accounts/${account.id}/transactions`, payload);
+      await reload(); formElement.reset(); setMessage(type === 'DEPOSIT' ? 'Deposit recorded.' : 'Withdrawal recorded.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this transaction.'); }
+    finally { setBusy(false); }
+  }
+  function money(value: string, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)); }
+    catch { return `${currency} ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value))}`; }
+  }
+  return <main className="dashboard"><section className={`${savingsStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PERSONAL SPACE</p><h1>Savings</h1><p className="muted">Track savings balances with dated deposits and withdrawals. Entries stay in your chosen account currency; this tracker does not move or hold money.</p>
+    {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
+    <section className={savingsStyles.panel}><h2>Add a savings account</h2><form className={savingsStyles.accountForm} onSubmit={createAccount}>
+      <label>Account name<input name="name" required maxLength={100} placeholder="e.g. Emergency savings" /></label>
+      <label>Bank or provider <span className={savingsStyles.optional}>(optional)</span><input name="provider" maxLength={100} placeholder="e.g. Your bank or mobile money wallet" /></label>
+      <label>Currency<input name="currencyCode" required minLength={3} maxLength={3} pattern="[A-Za-z]{3}" defaultValue={data?.baseCurrency ?? 'GHS'} /></label>
+      <label>Current opening balance<input name="openingBalance" type="number" min="0" step="0.0001" defaultValue="0" required /></label>
+      <label>Balance as of<input name="openedAt" type="date" defaultValue={localDate()} max={localDate()} required /></label>
+      <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Add account'} <span aria-hidden="true">→</span></button>
+    </form></section>
+    <section className={savingsStyles.panel}>
+      <div className={savingsStyles.summaryHeading}><div><p className="eyebrow">SAVINGS BALANCES</p><h2>Your accounts</h2></div></div>
+      {!data ? <p role="status">Loading savings…</p> : data.accounts.length === 0 ? <p className="muted">No savings accounts yet. Add an account above to start tracking a balance.</p> : <>
+        <div className={savingsStyles.totals}>{Object.entries(data.totalsByCurrency).map(([currency, total]) => <div key={currency}><span>Total tracked in {currency}</span><strong>{money(total, currency)}</strong></div>)}</div>
+        <div className={savingsStyles.accounts}>{data.accounts.map(account => <article className={savingsStyles.account} key={account.id}>
+          <div className={savingsStyles.accountHeading}><div><span className="eyebrow">SAVINGS ACCOUNT · {account.currencyCode}</span><h3>{account.name}</h3><p className="muted">{account.provider ? `${account.provider} · ` : ''}Balance as of {account.openedAt}</p></div><strong>{money(account.balance, account.currencyCode)}</strong></div>
+          <form className={savingsStyles.transactionForm} onSubmit={event => void recordTransaction(event, account)}>
+            <label>Transaction<select name="type" defaultValue="DEPOSIT"><option value="DEPOSIT">Deposit</option><option value="WITHDRAWAL">Withdrawal</option></select></label>
+            <label>Amount ({account.currencyCode})<input name="amount" type="number" min="0.0001" step="0.0001" placeholder="0.00" required /></label>
+            <label>Date<input name="transactionDate" type="date" defaultValue={localDate()} max={localDate()} min={account.openedAt} required /></label>
+            <label>Description <span className={savingsStyles.optional}>(optional)</span><input name="description" maxLength={240} placeholder="Add a note" /></label>
+            <button disabled={busy}>{busy ? 'Saving…' : 'Record transaction'}</button>
+          </form>
+          <div className={savingsStyles.activityHeading}><h4>Recent activity</h4><span>Opening balance {money(account.openingBalance, account.currencyCode)}</span></div>
+          {account.transactions.length === 0 ? <p className="muted">No deposits or withdrawals recorded yet.</p> : <ul className={savingsStyles.transactions}>{account.transactions.map(transaction => <li key={transaction.id}>
+            <div><strong>{transaction.type === 'DEPOSIT' ? 'Deposit' : 'Withdrawal'}</strong><span>{transaction.transactionDate}{transaction.description ? ` · ${transaction.description}` : ''}</span></div>
+            <strong className={transaction.type === 'DEPOSIT' ? savingsStyles.deposit : savingsStyles.withdrawal}>{transaction.type === 'DEPOSIT' ? '+' : '−'}{money(transaction.amount, account.currencyCode)}</strong>
+          </li>)}</ul>}
+        </article>)}</div>
+      </>}
     </section>
   </section></main>;
 }

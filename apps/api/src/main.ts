@@ -13,7 +13,7 @@ import { hashPassword, verifyPassword, newToken, hashToken, mayAccessPersonalSpa
 import { DEFAULT_CATEGORIES, normalizeCategoryName } from './categories.js';
 import { expectedPaydayDates, salaryPeriodStatus } from './income.js';
 import { nextRecurringDate } from './recurring.js';
-import { addDecimals, subtractDecimals } from './money.js';
+import { addDecimals, decimalToUnits, subtractDecimals } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
 const origin = required('WEB_ORIGIN');
@@ -59,6 +59,19 @@ const expenseInput = z.object({
   categoryId: z.string().uuid(),
   amount,
   spentAt: dateOnly,
+  description: z.string().trim().max(240).optional().transform(value => value || undefined),
+}).strict();
+const savingsAccountInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  provider: z.string().trim().max(100).optional().transform(value => value || undefined),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  openingBalance: z.string().regex(/^(?:0|[1-9]\d{0,14})(?:\.\d{1,4})?$/).default('0'),
+  openedAt: dateOnly.optional(),
+}).strict();
+const savingsTransactionInput = z.object({
+  type: z.enum(['DEPOSIT', 'WITHDRAWAL']),
+  amount,
+  transactionDate: dateOnly,
   description: z.string().trim().max(240).optional().transform(value => value || undefined),
 }).strict();
 const recurringInput = z.object({
@@ -616,6 +629,135 @@ class Api {
       return created;
     });
     return { id: record.id, category: record.category, amount: record.amount.toString(), currencyCode: record.currencyCode.trim(), spentAt: toDateOnly(record.spentAt), description: record.description };
+  }
+  @Get('spaces/:id/savings-accounts') async savingsAccounts(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const accounts = await db.savingsAccount.findMany({
+      where: { spaceId: membership.spaceId },
+      include: { transactions: { orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }], take: 10 } },
+      orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+    });
+    const aggregates = accounts.length ? await db.savingsTransaction.groupBy({
+      by: ['accountId', 'type'],
+      where: { accountId: { in: accounts.map(account => account.id) } },
+      _sum: { amount: true },
+    }) : [];
+    const aggregateAmounts = new Map(aggregates.map(item => [`${item.accountId}:${item.type}`, item._sum.amount?.toString() ?? '0']));
+    const totalsByCurrency = new Map<string, string>();
+    const result = accounts.map(account => {
+      const currencyCode = account.currencyCode.trim();
+      let balance = account.openingBalance.toString();
+      balance = addDecimals(balance, aggregateAmounts.get(`${account.id}:DEPOSIT`) ?? '0');
+      balance = subtractDecimals(balance, aggregateAmounts.get(`${account.id}:WITHDRAWAL`) ?? '0');
+      totalsByCurrency.set(currencyCode, addDecimals(totalsByCurrency.get(currencyCode) ?? '0', balance));
+      return {
+        id: account.id,
+        name: account.name,
+        provider: account.provider,
+        currencyCode,
+        openingBalance: account.openingBalance.toString(),
+        openedAt: toDateOnly(account.openedAt),
+        balance,
+        createdAt: account.createdAt,
+        transactions: account.transactions.map(transaction => ({
+          id: transaction.id,
+          type: transaction.type,
+          amount: transaction.amount.toString(),
+          transactionDate: toDateOnly(transaction.transactionDate),
+          description: transaction.description,
+          createdAt: transaction.createdAt,
+        })),
+      };
+    });
+    return { baseCurrency: membership.space.baseCurrency.trim(), totalsByCurrency: Object.fromEntries(totalsByCurrency), accounts: result };
+  }
+  @Post('spaces/:id/savings-accounts') async createSavingsAccount(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage savings in this space.');
+    const input = validate(savingsAccountInput, body);
+    const openedAt = input.openedAt ?? toDateOnly(new Date());
+    if (openedAt > toDateOnly(new Date())) throw new BadRequestException('Account opening date cannot be in the future.');
+    const account = await db.$transaction(async tx => {
+      const created = await tx.savingsAccount.create({
+        data: {
+          spaceId: membership.spaceId,
+          name: input.name,
+          provider: input.provider,
+          currencyCode: input.currencyCode ?? membership.space.baseCurrency,
+          openingBalance: input.openingBalance,
+          openedAt: new Date(`${openedAt}T00:00:00.000Z`),
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'SAVINGS_ACCOUNT_CREATED' } });
+      return created;
+    });
+    return {
+      id: account.id,
+      name: account.name,
+      provider: account.provider,
+      currencyCode: account.currencyCode.trim(),
+      openingBalance: account.openingBalance.toString(),
+      openedAt: toDateOnly(account.openedAt),
+      balance: account.openingBalance.toString(),
+      transactions: [],
+    };
+  }
+  @Post('spaces/:id/savings-accounts/:accountId/transactions') async recordSavingsTransaction(@Req() req: Request, @Param('id') id: string, @Param('accountId') accountId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record savings in this space.');
+    const validAccountId = validate(z.string().uuid(), accountId);
+    const input = validate(savingsTransactionInput, body);
+    if (input.transactionDate > toDateOnly(new Date())) throw new BadRequestException('Savings transaction date cannot be in the future.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "SavingsAccount" WHERE "id" = ${validAccountId} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+      const account = await tx.savingsAccount.findFirst({
+        where: { id: validAccountId, spaceId: membership.spaceId },
+        include: { transactions: { orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] } },
+      });
+      if (!account) throw new NotFoundException();
+      if (input.transactionDate < toDateOnly(account.openedAt)) throw new BadRequestException('Transaction date cannot be before this account was opened.');
+      let balance = decimalToUnits(account.openingBalance.toString());
+      let inserted = false;
+      const apply = (type: 'DEPOSIT' | 'WITHDRAWAL', value: string) => {
+        const units = decimalToUnits(value);
+        balance += type === 'DEPOSIT' ? units : -units;
+        if (balance < 0n) throw new BadRequestException('This withdrawal would make the savings balance negative based on the dated account history.');
+      };
+      for (const transaction of account.transactions) {
+        if (!inserted && toDateOnly(transaction.transactionDate) > input.transactionDate) {
+          apply(input.type, input.amount);
+          inserted = true;
+        }
+        apply(transaction.type, transaction.amount.toString());
+      }
+      if (!inserted) apply(input.type, input.amount);
+      const transaction = await tx.savingsTransaction.create({
+        data: {
+          accountId: account.id,
+          type: input.type,
+          amount: input.amount,
+          transactionDate: new Date(`${input.transactionDate}T00:00:00.000Z`),
+          description: input.description,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({
+        data: { actorUserId: user.id, spaceId: membership.spaceId, action: input.type === 'DEPOSIT' ? 'SAVINGS_DEPOSIT_RECORDED' : 'SAVINGS_WITHDRAWAL_RECORDED' },
+      });
+      return {
+        id: transaction.id,
+        accountId: transaction.accountId,
+        type: transaction.type,
+        amount: transaction.amount.toString(),
+        currencyCode: account.currencyCode.trim(),
+        transactionDate: toDateOnly(transaction.transactionDate),
+        description: transaction.description,
+      };
+    });
   }
 }
 const dummyHash = hashPassword(newToken());
