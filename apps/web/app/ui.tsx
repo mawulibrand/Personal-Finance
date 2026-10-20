@@ -9,6 +9,7 @@ import expenseStyles from './expenses.module.css';
 import recurringStyles from './recurring.module.css';
 import budgetStyles from './budgets.module.css';
 import savingsStyles from './savings.module.css';
+import liabilityStyles from './liabilities.module.css';
 export async function api(path: string, body?: unknown) {
   const response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   const result = await response.json().catch(() => ({ message: 'The service is unavailable. Please try again.' }));
@@ -71,6 +72,7 @@ const workspaceLinks = [
   { href: '/income', label: 'Income' },
   { href: '/expenses', label: 'Expenses' },
   { href: '/savings', label: 'Savings' },
+  { href: '/liabilities', label: 'Liabilities' },
   { href: '/recurring', label: 'Recurring' },
   { href: '/budgets', label: 'Budgets' },
   { href: '/categories', label: 'Categories' },
@@ -654,6 +656,137 @@ export function Savings() {
           {account.transactions.length === 0 ? <p className="muted">No deposits or withdrawals recorded yet.</p> : <ul className={savingsStyles.transactions}>{account.transactions.map(transaction => <li key={transaction.id}>
             <div><strong>{transaction.type === 'DEPOSIT' ? 'Deposit' : 'Withdrawal'}</strong><span>{transaction.transactionDate}{transaction.description ? ` · ${transaction.description}` : ''}</span></div>
             <strong className={transaction.type === 'DEPOSIT' ? savingsStyles.deposit : savingsStyles.withdrawal}>{transaction.type === 'DEPOSIT' ? '+' : '−'}{money(transaction.amount, account.currencyCode)}</strong>
+          </li>)}</ul>}
+        </article>)}</div>
+      </>}
+    </section>
+  </section></main>;
+}
+
+type LiabilityPayment = {
+  id: string;
+  amount: string;
+  principalAmount: string;
+  interestAndFeesAmount: string;
+  paidAt: string;
+  description: string | null;
+};
+type LiabilityItem = {
+  id: string;
+  type: 'CREDIT_CARD' | 'PERSONAL_LOAN' | 'MORTGAGE' | 'STUDENT_LOAN' | 'AUTO_LOAN' | 'BUY_NOW_PAY_LATER' | 'OTHER';
+  name: string;
+  provider: string | null;
+  currencyCode: string;
+  originalAmount: string;
+  openingBalance: string;
+  principalPaid: string;
+  outstandingBalance: string;
+  annualInterestRate: string;
+  monthlyPayment: string | null;
+  startDate: string;
+  expectedPayoffDate: string | null;
+  status: 'ACTIVE' | 'PAID_OFF';
+  payments: LiabilityPayment[];
+};
+type LiabilityOverview = { baseCurrency: string; totalsByCurrency: Record<string, string>; liabilities: LiabilityItem[] };
+const liabilityTypeLabels: Record<LiabilityItem['type'], string> = {
+  CREDIT_CARD: 'Credit card', PERSONAL_LOAN: 'Personal loan', MORTGAGE: 'Mortgage', STUDENT_LOAN: 'Student loan',
+  AUTO_LOAN: 'Auto loan', BUY_NOW_PAY_LATER: 'Buy now, pay later', OTHER: 'Other debt',
+};
+export function Liabilities() {
+  const [spaceId, setSpaceId] = useState('');
+  const [data, setData] = useState<LiabilityOverview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/liabilities`);
+      if (active) { setSpaceId(spaces[0].id); setData(result); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load liabilities.'); }
+  })(); return () => { active = false; }; }, []);
+  async function reload() {
+    if (spaceId) setData(await api(`spaces/${spaceId}/liabilities`));
+  }
+  async function createLiability(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      type: String(form.get('type') ?? 'PERSONAL_LOAN'),
+      name: String(form.get('name') ?? '').trim(),
+      currencyCode: String(form.get('currencyCode') ?? data?.baseCurrency ?? 'GHS').trim().toUpperCase(),
+      originalAmount: String(form.get('originalAmount') ?? '').trim(),
+      openingBalance: String(form.get('openingBalance') ?? '').trim(),
+      annualInterestRate: String(form.get('annualInterestRate') ?? '0').trim() || '0',
+      startDate: String(form.get('startDate') ?? ''),
+    };
+    const provider = String(form.get('provider') ?? '').trim();
+    const monthlyPayment = String(form.get('monthlyPayment') ?? '').trim();
+    const expectedPayoffDate = String(form.get('expectedPayoffDate') ?? '').trim();
+    if (provider) payload.provider = provider;
+    if (monthlyPayment) payload.monthlyPayment = monthlyPayment;
+    if (expectedPayoffDate) payload.expectedPayoffDate = expectedPayoffDate;
+    try { await api(`spaces/${spaceId}/liabilities`, payload); await reload(); formElement.reset(); setMessage('Liability added.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this liability.'); }
+    finally { setBusy(false); }
+  }
+  async function recordPayment(event: FormEvent<HTMLFormElement>, liability: LiabilityItem) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      amount: String(form.get('amount') ?? '').trim(),
+      paidAt: String(form.get('paidAt') ?? ''),
+    };
+    const principalAmount = String(form.get('principalAmount') ?? '').trim();
+    const description = String(form.get('description') ?? '').trim();
+    if (principalAmount) payload.principalAmount = principalAmount;
+    if (description) payload.description = description;
+    try { await api(`spaces/${spaceId}/liabilities/${liability.id}/payments`, payload); await reload(); formElement.reset(); setMessage('Repayment recorded.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this repayment.'); }
+    finally { setBusy(false); }
+  }
+  function money(value: string, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)); }
+    catch { return `${currency} ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value))}`; }
+  }
+  return <main className="dashboard"><section className={`${liabilityStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PERSONAL SPACE</p><h1>Liabilities</h1><p className="muted">Track debts and repayments. Enter the principal portion of each payment to update the outstanding balance; interest and fees are recorded separately and are not accrued automatically.</p>
+    {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
+    <section className={liabilityStyles.panel}><h2>Add a liability</h2><form className={liabilityStyles.liabilityForm} onSubmit={createLiability}>
+      <label>Debt type<select name="type" defaultValue="PERSONAL_LOAN">{Object.entries(liabilityTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <label>Name<input name="name" required maxLength={100} placeholder="e.g. Education loan" /></label>
+      <label>Lender <span className={liabilityStyles.optional}>(optional)</span><input name="provider" maxLength={100} placeholder="Bank or lender" /></label>
+      <label>Currency<input name="currencyCode" required minLength={3} maxLength={3} pattern="[A-Za-z]{3}" defaultValue={data?.baseCurrency ?? 'GHS'} /></label>
+      <label>Original amount<input name="originalAmount" type="number" min="0.0001" step="0.0001" required /></label>
+      <label>Balance when tracking starts<input name="openingBalance" type="number" min="0" step="0.0001" required /></label>
+      <label>Annual interest rate (%)<input name="annualInterestRate" type="number" min="0" max="100" step="0.0001" defaultValue="0" required /></label>
+      <label>Expected monthly payment <span className={liabilityStyles.optional}>(optional)</span><input name="monthlyPayment" type="number" min="0.0001" step="0.0001" /></label>
+      <label>Debt start date<input name="startDate" type="date" max={localDate()} required /></label>
+      <label>Expected payoff date <span className={liabilityStyles.optional}>(optional)</span><input name="expectedPayoffDate" type="date" /></label>
+      <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Add liability'} <span aria-hidden="true">→</span></button>
+    </form></section>
+    <section className={liabilityStyles.panel}>
+      <div className={liabilityStyles.summaryHeading}><div><p className="eyebrow">OUTSTANDING BALANCES</p><h2>Your liabilities</h2></div></div>
+      {!data ? <p role="status">Loading liabilities…</p> : data.liabilities.length === 0 ? <p className="muted">No liabilities yet. Add a debt above to begin tracking its repayment progress.</p> : <>
+        <div className={liabilityStyles.totals}>{Object.entries(data.totalsByCurrency).map(([currency, total]) => <div key={currency}><span>Total outstanding in {currency}</span><strong>{money(total, currency)}</strong></div>)}</div>
+        <div className={liabilityStyles.liabilities}>{data.liabilities.map(liability => <article className={liabilityStyles.liability} key={liability.id}>
+          <div className={liabilityStyles.liabilityHeading}><div><span className="eyebrow">{liabilityTypeLabels[liability.type]} · {liability.currencyCode}</span><h3>{liability.name}</h3><p className="muted">{liability.provider ? `${liability.provider} · ` : ''}Started {liability.startDate}{liability.expectedPayoffDate ? ` · Expected payoff ${liability.expectedPayoffDate}` : ''}</p></div><div className={liabilityStyles.balance}><strong>{money(liability.outstandingBalance, liability.currencyCode)}</strong><span className="tag">{liability.status === 'PAID_OFF' ? 'PAID OFF' : 'ACTIVE'}</span></div></div>
+          <div className={liabilityStyles.details}><span>Original {money(liability.originalAmount, liability.currencyCode)}</span><span>Rate {liability.annualInterestRate}% yearly</span>{liability.monthlyPayment && <span>Planned monthly payment {money(liability.monthlyPayment, liability.currencyCode)}</span>}</div>
+          {liability.status === 'ACTIVE' && <form className={liabilityStyles.paymentForm} onSubmit={event => void recordPayment(event, liability)}>
+            <label>Total paid ({liability.currencyCode})<input name="amount" type="number" min="0.0001" step="0.0001" required /></label>
+            <label>Principal portion <span className={liabilityStyles.optional}>(optional)</span><input name="principalAmount" type="number" min="0" step="0.0001" placeholder="Defaults to total paid" /></label>
+            <label>Payment date<input name="paidAt" type="date" defaultValue={localDate()} max={localDate()} min={liability.startDate} required /></label>
+            <label>Description <span className={liabilityStyles.optional}>(optional)</span><input name="description" maxLength={240} placeholder="Add a note" /></label>
+            <p className={liabilityStyles.hint}>The remainder of the total is recorded as interest and fees. Payments are tracking entries only; no money is moved.</p>
+            <button disabled={busy}>{busy ? 'Saving…' : 'Record repayment'}</button>
+          </form>}
+          <div className={liabilityStyles.activityHeading}><h4>Repayment history</h4><span>Principal paid {money(liability.principalPaid, liability.currencyCode)}</span></div>
+          {liability.payments.length === 0 ? <p className="muted">No repayments recorded yet.</p> : <ul className={liabilityStyles.payments}>{liability.payments.map(payment => <li key={payment.id}>
+            <div><strong>Payment · {payment.paidAt}</strong><span>Principal {money(payment.principalAmount, liability.currencyCode)} · Interest and fees {money(payment.interestAndFeesAmount, liability.currencyCode)}{payment.description ? ` · ${payment.description}` : ''}</span></div><strong>{money(payment.amount, liability.currencyCode)}</strong>
           </li>)}</ul>}
         </article>)}</div>
       </>}

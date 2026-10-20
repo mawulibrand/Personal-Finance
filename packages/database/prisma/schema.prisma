@@ -50,6 +50,19 @@ enum SavingsTransactionType {
   DEPOSIT
   WITHDRAWAL
 }
+enum LiabilityType {
+  CREDIT_CARD
+  PERSONAL_LOAN
+  MORTGAGE
+  STUDENT_LOAN
+  AUTO_LOAN
+  BUY_NOW_PAY_LATER
+  OTHER
+}
+enum LiabilityStatus {
+  ACTIVE
+  PAID_OFF
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -66,6 +79,8 @@ model User {
   recurringRecords RecurringRecord[]
   savingsAccounts SavingsAccount[]
   savingsTransactions SavingsTransaction[]
+  liabilities Liability[]
+  liabilityPayments LiabilityPayment[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -84,6 +99,7 @@ model FinancialSpace {
   budgets Budget[]
   recurringRecords RecurringRecord[]
   savingsAccounts SavingsAccount[]
+  liabilities Liability[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -297,4 +313,39 @@ model SavingsTransaction {
   account SavingsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   @@index([accountId, transactionDate, createdAt])
+}
+model Liability {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  type LiabilityType
+  name String
+  provider String?
+  currencyCode String @default("GHS") @db.Char(3)
+  originalAmount Decimal @db.Decimal(19, 4)
+  openingBalance Decimal @db.Decimal(19, 4)
+  annualInterestRate Decimal @default(0) @db.Decimal(7, 4)
+  monthlyPayment Decimal? @db.Decimal(19, 4)
+  startDate DateTime @db.Date
+  expectedPayoffDate DateTime? @db.Date
+  status LiabilityStatus @default(ACTIVE)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  payments LiabilityPayment[]
+  @@index([spaceId, status, createdAt])
+}
+model LiabilityPayment {
+  id String @id @default(uuid()) @db.Uuid
+  liabilityId String @db.Uuid
+  amount Decimal @db.Decimal(19, 4)
+  principalAmount Decimal @db.Decimal(19, 4)
+  paidAt DateTime @db.Date
+  description String?
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  liability Liability @relation(fields: [liabilityId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([liabilityId, paidAt, createdAt])
 }

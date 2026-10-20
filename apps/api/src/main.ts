@@ -74,6 +74,30 @@ const savingsTransactionInput = z.object({
   transactionDate: dateOnly,
   description: z.string().trim().max(240).optional().transform(value => value || undefined),
 }).strict();
+const nonNegativeAmount = z.string().regex(/^(?:0|[1-9]\d{0,14})(?:\.\d{1,4})?$/);
+const interestRate = z.string().regex(/^(?:0|[1-9]\d{0,2})(?:\.\d{1,4})?$/).refine(value => decimalToUnits(value) <= 1_000_000n, 'Annual interest rate cannot exceed 100%.');
+const liabilityInput = z.object({
+  type: z.enum(['CREDIT_CARD', 'PERSONAL_LOAN', 'MORTGAGE', 'STUDENT_LOAN', 'AUTO_LOAN', 'BUY_NOW_PAY_LATER', 'OTHER']),
+  name: z.string().trim().min(1).max(100),
+  provider: z.string().trim().max(100).optional().transform(value => value || undefined),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  originalAmount: amount,
+  openingBalance: nonNegativeAmount,
+  annualInterestRate: interestRate.default('0'),
+  monthlyPayment: amount.optional(),
+  startDate: dateOnly,
+  expectedPayoffDate: dateOnly.optional(),
+}).strict().superRefine((input, context) => {
+  if (input.expectedPayoffDate && input.expectedPayoffDate < input.startDate) {
+    context.addIssue({ code: 'custom', path: ['expectedPayoffDate'], message: 'Expected payoff date must be on or after the debt start date.' });
+  }
+});
+const liabilityPaymentInput = z.object({
+  amount,
+  principalAmount: nonNegativeAmount.optional(),
+  paidAt: dateOnly,
+  description: z.string().trim().max(240).optional().transform(value => value || undefined),
+}).strict();
 const recurringInput = z.object({
   name: z.string().trim().min(1).max(100),
   flow: z.enum(['INCOME', 'EXPENSE']),
@@ -756,6 +780,148 @@ class Api {
         currencyCode: account.currencyCode.trim(),
         transactionDate: toDateOnly(transaction.transactionDate),
         description: transaction.description,
+      };
+    });
+  }
+  @Get('spaces/:id/liabilities') async liabilities(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const liabilities = await db.liability.findMany({
+      where: { spaceId: membership.spaceId },
+      include: { payments: { orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }], take: 10 } },
+      orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+    });
+    const aggregates = liabilities.length ? await db.liabilityPayment.groupBy({
+      by: ['liabilityId'],
+      where: { liabilityId: { in: liabilities.map(liability => liability.id) } },
+      _sum: { principalAmount: true },
+    }) : [];
+    const principalPaidByLiability = new Map(aggregates.map(item => [item.liabilityId, item._sum.principalAmount?.toString() ?? '0']));
+    const totalsByCurrency = new Map<string, string>();
+    const result = liabilities.map(liability => {
+      const currencyCode = liability.currencyCode.trim();
+      const principalPaid = principalPaidByLiability.get(liability.id) ?? '0';
+      const outstandingBalance = subtractDecimals(liability.openingBalance.toString(), principalPaid);
+      totalsByCurrency.set(currencyCode, addDecimals(totalsByCurrency.get(currencyCode) ?? '0', outstandingBalance));
+      return {
+        id: liability.id,
+        type: liability.type,
+        name: liability.name,
+        provider: liability.provider,
+        currencyCode,
+        originalAmount: liability.originalAmount.toString(),
+        openingBalance: liability.openingBalance.toString(),
+        principalPaid,
+        outstandingBalance,
+        annualInterestRate: liability.annualInterestRate.toString(),
+        monthlyPayment: liability.monthlyPayment?.toString() ?? null,
+        startDate: toDateOnly(liability.startDate),
+        expectedPayoffDate: liability.expectedPayoffDate ? toDateOnly(liability.expectedPayoffDate) : null,
+        status: outstandingBalance === '0' ? 'PAID_OFF' : liability.status,
+        payments: liability.payments.map(payment => ({
+          id: payment.id,
+          amount: payment.amount.toString(),
+          principalAmount: payment.principalAmount.toString(),
+          interestAndFeesAmount: subtractDecimals(payment.amount.toString(), payment.principalAmount.toString()),
+          paidAt: toDateOnly(payment.paidAt),
+          description: payment.description,
+        })),
+      };
+    });
+    return { baseCurrency: membership.space.baseCurrency.trim(), totalsByCurrency: Object.fromEntries(totalsByCurrency), liabilities: result };
+  }
+  @Post('spaces/:id/liabilities') async createLiability(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage liabilities in this space.');
+    const input = validate(liabilityInput, body);
+    if (input.startDate > toDateOnly(new Date())) throw new BadRequestException('Debt start date cannot be in the future.');
+    const liability = await db.$transaction(async tx => {
+      const created = await tx.liability.create({
+        data: {
+          spaceId: membership.spaceId,
+          type: input.type,
+          name: input.name,
+          provider: input.provider,
+          currencyCode: input.currencyCode ?? membership.space.baseCurrency,
+          originalAmount: input.originalAmount,
+          openingBalance: input.openingBalance,
+          annualInterestRate: input.annualInterestRate,
+          monthlyPayment: input.monthlyPayment,
+          startDate: new Date(`${input.startDate}T00:00:00.000Z`),
+          expectedPayoffDate: input.expectedPayoffDate ? new Date(`${input.expectedPayoffDate}T00:00:00.000Z`) : undefined,
+          status: decimalToUnits(input.openingBalance) === 0n ? 'PAID_OFF' : 'ACTIVE',
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'LIABILITY_CREATED' } });
+      return created;
+    });
+    return {
+      id: liability.id,
+      type: liability.type,
+      name: liability.name,
+      provider: liability.provider,
+      currencyCode: liability.currencyCode.trim(),
+      originalAmount: liability.originalAmount.toString(),
+      openingBalance: liability.openingBalance.toString(),
+      outstandingBalance: liability.openingBalance.toString(),
+      annualInterestRate: liability.annualInterestRate.toString(),
+      monthlyPayment: liability.monthlyPayment?.toString() ?? null,
+      startDate: toDateOnly(liability.startDate),
+      expectedPayoffDate: liability.expectedPayoffDate ? toDateOnly(liability.expectedPayoffDate) : null,
+      status: liability.status,
+      payments: [],
+    };
+  }
+  @Post('spaces/:id/liabilities/:liabilityId/payments') async recordLiabilityPayment(@Req() req: Request, @Param('id') id: string, @Param('liabilityId') liabilityId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record liability payments in this space.');
+    const validLiabilityId = validate(z.string().uuid(), liabilityId);
+    const input = validate(liabilityPaymentInput, body);
+    if (input.paidAt > toDateOnly(new Date())) throw new BadRequestException('Payment date cannot be in the future.');
+    const principalAmount = input.principalAmount ?? input.amount;
+    if (decimalToUnits(principalAmount) > decimalToUnits(input.amount)) throw new BadRequestException('Principal paid cannot exceed the total payment.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "Liability" WHERE "id" = ${validLiabilityId} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+      const liability = await tx.liability.findFirst({ where: { id: validLiabilityId, spaceId: membership.spaceId } });
+      if (!liability) throw new NotFoundException();
+      if (input.paidAt < toDateOnly(liability.startDate)) throw new BadRequestException('Payment date cannot be before this debt started.');
+      if (liability.status === 'PAID_OFF') throw new BadRequestException('This liability is already paid off.');
+      const principalAggregate = await tx.liabilityPayment.aggregate({ where: { liabilityId: liability.id }, _sum: { principalAmount: true } });
+      const totalPrincipalPaid = principalAggregate._sum.principalAmount?.toString() ?? '0';
+      const outstandingBalance = subtractDecimals(liability.openingBalance.toString(), totalPrincipalPaid);
+      if (decimalToUnits(principalAmount) > decimalToUnits(outstandingBalance)) {
+        throw new BadRequestException('Principal paid cannot exceed the outstanding balance.');
+      }
+      const newBalance = subtractDecimals(outstandingBalance, principalAmount);
+      const payment = await tx.liabilityPayment.create({
+        data: {
+          liabilityId: liability.id,
+          amount: input.amount,
+          principalAmount,
+          paidAt: new Date(`${input.paidAt}T00:00:00.000Z`),
+          description: input.description,
+          createdBy: user.id,
+        },
+      });
+      if (newBalance === '0') {
+        await tx.liability.update({ where: { id: liability.id }, data: { status: 'PAID_OFF' } });
+      }
+      await tx.auditEvent.create({
+        data: { actorUserId: user.id, spaceId: membership.spaceId, action: newBalance === '0' ? 'LIABILITY_PAID_OFF' : 'LIABILITY_PAYMENT_RECORDED' },
+      });
+      return {
+        id: payment.id,
+        liabilityId: payment.liabilityId,
+        amount: payment.amount.toString(),
+        principalAmount: payment.principalAmount.toString(),
+        interestAndFeesAmount: subtractDecimals(payment.amount.toString(), payment.principalAmount.toString()),
+        paidAt: toDateOnly(payment.paidAt),
+        description: payment.description,
+        outstandingBalance: newBalance,
+        status: newBalance === '0' ? 'PAID_OFF' : 'ACTIVE',
       };
     });
   }

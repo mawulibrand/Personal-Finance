@@ -7,7 +7,7 @@ A Ghana-first platform for understanding cash flow, tracking wealth, planning fi
 - [Full project brief](docs/project-brief.txt)
 - [Delivery phases and acceptance criteria](docs/delivery-phases.txt)
 
-The supplied documents are preserved as the project baseline. The Phase 1 foundation, Phase 2 personal-finance slices, and the first Phase 3 savings-account slice are implemented locally. See [local development](docs/local-development.md) for setup and [implementation status](docs/implementation-status.md) for verified scope and remaining work.
+The supplied documents are preserved as the project baseline. The Phase 1 foundation, Phase 2 personal-finance slices, and initial Phase 3 savings and liability tracking slices are implemented locally. See [local development](docs/local-development.md) for setup and [implementation status](docs/implementation-status.md) for verified scope and remaining work.
 
 ## Core principles
 
