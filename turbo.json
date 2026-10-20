@@ -3,6 +3,7 @@
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**", ".next/**", "!.next/cache/**"] },
     "typecheck": { "dependsOn": ["^build"] },
+    "@pf/database#build": { "passThroughEnv": ["DATABASE_URL"] },
     "@pf/database#typecheck": { "dependsOn": ["build"] },
     "test": { "dependsOn": ["^build"], "outputs": ["coverage/**"] },
     "dev": { "dependsOn": ["^build"], "cache": false, "persistent": true }
