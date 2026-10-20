@@ -18,15 +18,32 @@ const worker = new Worker('email', async job => {
   await db.emailOutbox.update({ where: { id: email.id }, data: { sentAt: new Date(), body: '[delivered]' } });
 }, { connection, concurrency: 2, autorun: false });
 const lastLogged = new Map<string, number>();
-function logServiceError(event: string) {
+function safeErrorDetails(error: unknown) {
+  const value = error && typeof error === 'object' ? error as { name?: unknown; code?: unknown; message?: unknown } : {};
+  let message = typeof value.message === 'string' ? value.message : String(error ?? 'Unknown error');
+  for (const name of ['DATABASE_URL', 'REDIS_URL', 'SMTP_PASSWORD', 'SMTP_USER']) {
+    const secret = process.env[name];
+    if (secret) message = message.replaceAll(secret, '[redacted]');
+  }
+  message = message
+    .replace(/\b((?:redis|rediss|postgres(?:ql)?|smtp):\/\/)[^\s/@]+@/gi, '$1[redacted]@')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
+    .slice(0, 300);
+  return {
+    ...(typeof value.name === 'string' ? { errorName: value.name } : {}),
+    ...(typeof value.code === 'string' ? { errorCode: value.code } : {}),
+    errorMessage: message,
+  };
+}
+function logServiceError(event: string, error?: unknown) {
   const now = Date.now();
   if (now - (lastLogged.get(event) ?? 0) < 30000) return;
   lastLogged.set(event, now);
-  process.stderr.write(JSON.stringify({ event }) + '\n');
+  process.stderr.write(JSON.stringify({ event, ...(error === undefined ? {} : safeErrorDetails(error)) }) + '\n');
 }
-worker.on('failed', job => process.stderr.write(JSON.stringify({ event: 'email_job_failed', jobId: job?.id }) + '\n'));
-worker.on('error', () => logServiceError('email_worker_error'));
-queue.on('error', () => logServiceError('email_queue_error'));
+worker.on('failed', (job, error) => process.stderr.write(JSON.stringify({ event: 'email_job_failed', jobId: job?.id, ...safeErrorDetails(error) }) + '\n'));
+worker.on('error', error => logServiceError('email_worker_error', error));
+queue.on('error', error => logServiceError('email_queue_error', error));
 let polling = false;
 async function poll() {
   if (polling) return;
@@ -34,7 +51,7 @@ async function poll() {
   try {
     const pending = await db.emailOutbox.findMany({ where: { sentAt: null }, take: 100, orderBy: { createdAt: 'asc' }, select: { id: true } });
     for (const email of pending) await queue.add('send', { id: email.id }, { jobId: email.id });
-  } catch { process.stderr.write('{"event":"email_outbox_poll_failed"}\n'); }
+  } catch (error) { logServiceError('email_outbox_poll_failed', error); }
   finally { polling = false; }
 }
 const timer = setInterval(() => { void poll(); }, 5000);
@@ -49,7 +66,7 @@ async function main() {
   app.enableShutdownHooks();
   process.stdout.write('{"event":"worker_waiting_for_redis"}\n');
   await worker.waitUntilReady();
-  void worker.run().catch(() => logServiceError('email_worker_run_failed'));
+  void worker.run().catch(error => logServiceError('email_worker_run_failed', error));
   process.stdout.write('{"event":"worker_started"}\n');
 }
-main().catch(() => { process.stderr.write('{"event":"worker_startup_failed"}\n'); process.exitCode = 1; });
+main().catch(error => { logServiceError('worker_startup_failed', error); process.exitCode = 1; });

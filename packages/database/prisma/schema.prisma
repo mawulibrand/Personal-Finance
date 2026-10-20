@@ -19,6 +19,33 @@ enum TokenPurpose {
   VERIFY_EMAIL
   RESET_PASSWORD
 }
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+enum IncomeSourceType {
+  SALARY
+  SELF_EMPLOYMENT
+  BUSINESS
+  INVESTMENT
+  GIFT
+  OTHER
+}
+enum PaydayAdjustmentRule {
+  PREVIOUS_WORKING_DAY
+  NEXT_WORKING_DAY
+  NO_ADJUSTMENT
+}
+enum RecurringFlow {
+  INCOME
+  EXPENSE
+}
+enum RecurrenceFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  YEARLY
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -30,6 +57,9 @@ model User {
   memberships Membership[]
   sessions Session[]
   tokens AuthToken[]
+  expenseRecords ExpenseRecord[]
+  budgets Budget[]
+  recurringRecords RecurringRecord[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -42,6 +72,11 @@ model FinancialSpace {
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
   memberships Membership[]
+  categories Category[]
+  incomeSources IncomeSource[]
+  expenseRecords ExpenseRecord[]
+  budgets Budget[]
+  recurringRecords RecurringRecord[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -86,4 +121,144 @@ model EmailOutbox {
   createdAt DateTime @default(now()) @db.Timestamptz
   sentAt DateTime? @db.Timestamptz
   @@index([sentAt, createdAt])
+}
+model Category {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  normalizedName String
+  type CategoryType
+  isSystem Boolean @default(false)
+  isArchived Boolean @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  expenseRecords ExpenseRecord[]
+  budgetAllocations BudgetAllocation[]
+  recurringRecords RecurringRecord[]
+  @@unique([spaceId, type, normalizedName])
+  @@index([spaceId, type, isArchived])
+}
+model IncomeSource {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  type IncomeSourceType
+  expectedAmount Decimal? @db.Decimal(19, 4)
+  currencyCode String @default("GHS") @db.Char(3)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  expectedPaydays SalaryExpectedDate[]
+  records IncomeRecord[]
+  recurringRecords RecurringRecord[]
+  @@index([spaceId, isActive, createdAt])
+}
+model SalaryExpectedDate {
+  id String @id @default(uuid()) @db.Uuid
+  sourceId String @db.Uuid
+  sequence Int
+  dayOfMonth Int
+  adjustmentRule PaydayAdjustmentRule
+  source IncomeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  @@unique([sourceId, sequence])
+  @@index([sourceId, dayOfMonth])
+}
+model IncomeRecord {
+  id String @id @default(uuid()) @db.Uuid
+  sourceId String @db.Uuid
+  amount Decimal @db.Decimal(19, 4)
+  receivedDate DateTime @db.Date
+  periodYear Int?
+  periodMonth Int?
+  recurringOccurrenceId String? @unique @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  source IncomeSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  recurringOccurrence RecurringOccurrence? @relation("RecurringIncome", fields: [recurringOccurrenceId], references: [id], onDelete: SetNull)
+  @@unique([sourceId, periodYear, periodMonth])
+  @@index([sourceId, receivedDate])
+}
+model ExpenseRecord {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  categoryId String @db.Uuid
+  amount Decimal @db.Decimal(19, 4)
+  currencyCode String @db.Char(3)
+  spentAt DateTime @db.Date
+  description String?
+  createdBy String @db.Uuid
+  recurringOccurrenceId String? @unique @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  recurringOccurrence RecurringOccurrence? @relation("RecurringExpense", fields: [recurringOccurrenceId], references: [id], onDelete: SetNull)
+  @@index([spaceId, spentAt])
+  @@index([categoryId, spentAt])
+}
+model RecurringRecord {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  flow RecurringFlow
+  amount Decimal @db.Decimal(19, 4)
+  currencyCode String @db.Char(3)
+  frequency RecurrenceFrequency
+  startDate DateTime @db.Date
+  nextDueDate DateTime @db.Date
+  endDate DateTime? @db.Date
+  dayOfMonth Int
+  monthOfYear Int?
+  categoryId String? @db.Uuid
+  sourceId String? @db.Uuid
+  isActive Boolean @default(true)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  source IncomeSource? @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  occurrences RecurringOccurrence[]
+  @@index([spaceId, isActive, nextDueDate])
+}
+model RecurringOccurrence {
+  id String @id @default(uuid()) @db.Uuid
+  recurringRecordId String @db.Uuid
+  dueDate DateTime @db.Date
+  actualDate DateTime @db.Date
+  createdAt DateTime @default(now()) @db.Timestamptz
+  recurringRecord RecurringRecord @relation(fields: [recurringRecordId], references: [id], onDelete: Cascade)
+  incomeRecord IncomeRecord? @relation("RecurringIncome")
+  expenseRecord ExpenseRecord? @relation("RecurringExpense")
+  @@unique([recurringRecordId, dueDate])
+  @@index([actualDate])
+}
+model Budget {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  year Int
+  month Int
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  allocations BudgetAllocation[]
+  @@unique([spaceId, year, month])
+  @@index([spaceId, year, month])
+}
+model BudgetAllocation {
+  id String @id @default(uuid()) @db.Uuid
+  budgetId String @db.Uuid
+  categoryId String @db.Uuid
+  limitAmount Decimal @db.Decimal(19, 4)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  budget Budget @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  @@unique([budgetId, categoryId])
+  @@index([categoryId])
 }

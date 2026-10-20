@@ -7,7 +7,7 @@ A Ghana-first platform for understanding cash flow, tracking wealth, planning fi
 - [Full project brief](docs/project-brief.txt)
 - [Delivery phases and acceptance criteria](docs/delivery-phases.txt)
 
-The supplied documents are preserved as the project baseline. The first Phase 1 slice is implemented locally: a web app, API, email worker, and identity/Personal Space database schema. See [local development](docs/local-development.md) for setup and current verification limits.
+The supplied documents are preserved as the project baseline. The Phase 1 foundation and Phase 2 slices for category management, income, categorized expenses, recurring records, monthly budgets, and cash-flow reporting are implemented locally. See [local development](docs/local-development.md) for setup and [implementation status](docs/implementation-status.md) for verified scope and remaining work.
 
 ## Core principles
 

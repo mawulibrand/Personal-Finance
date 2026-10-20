@@ -1,31 +1,26 @@
-# Phase 1 implementation status
+# Implementation status
 
-## Written
+## Completed slices
 
-- pnpm/Turborepo TypeScript monorepo with web, API, worker, and database package.
-- Next.js responsive registration, sign-in, verification, password recovery, and private dashboard screens.
-- Public PWA manifest and offline fallback; authenticated API data is never cached by the service worker.
-- NestJS API and NestJS/BullMQ email worker.
-- Prisma/PostgreSQL identity schema and initial version-controlled migration.
-- Atomic creation of a user, Personal Space, owner membership, verification token, audit event, and email outbox message.
-- Hashed one-time tokens and revocable HttpOnly cookie sessions; resetting a password revokes existing sessions.
-- Membership/ownership checks, same-origin mutation checks, request rate limits, and sanitized error responses.
-- Development PostgreSQL, Redis, and Mailpit Compose services; Docker image definition and CI workflow.
-- Database-backed identity integration tests prepared for CI.
+- Phase 1 foundation: pnpm/Turborepo monorepo, web app, API, email worker, PostgreSQL schema, and local service setup.
+- Identity: registration, email verification, sign-in, password recovery, revocable sessions, Personal Spaces, authorization checks, and audit events.
+- Phase 2 categories: per-space standard income and expense categories, custom category creation, duplicate-name protection, API authorization, and a category management screen.
+- Phase 2 income: per-space income sources, actual income records, monthly salary schedules with multiple possible payday dates, weekend adjustment rules, salary confirmation, duplicate-period protection, and an income screen.
+- Phase 2 expenses: categorized manual expense records, monthly totals and history, base-currency handling, space-level authorization, and a responsive sidebar across signed-in pages.
+- Phase 2 recurring records: weekly, fortnightly, monthly, and yearly income/expense schedules. A due item creates a cash transaction only after user confirmation.
+- Phase 2 budgets and cash flow: monthly category limits, exact decimal spending and remaining calculations, currency-aware actual income totals, expense category breakdowns, and monthly net cash flow.
 
-## Verified on the initial machine
+## Local verification
 
-- Node.js 24.16.0 and pnpm 10.17.1 are available.
-- Three dependency-free security tests pass (`node scripts/test-security.mjs`).
-- JavaScript syntax checks pass for the service worker and identity integration test.
-- `git diff --check` passes.
+- `pnpm.cmd typecheck` passes across all workspaces.
+- `pnpm.cmd test` passes all API unit tests.
+- `pnpm.cmd build` succeeds for the API, worker, and web app.
+- `node --env-file=.env --test tests/integration/identity.test.mjs` passes identity, category, income, expense recording, recurring confirmations, budget totals, cash flow, and cross-space privacy checks.
+- The foundation, category, income, expense, recurring-record, and budget migrations are applied to the local development database.
 
-## Pending verification
+## Remaining work
 
-Dependency installation repeatedly failed with npm registry DNS/connection errors, including escalated attempts. Consequently there is no generated lockfile, Prisma client, full typecheck, application build, or browser test result. Docker and PostgreSQL executables were not available, so migrations and integration tests were not run locally. These are verification limits, not successful checks.
+- Later phases: wealth tracking, investments, deterministic analytics, planning, household finance, notifications, and production hardening.
+- Staging deployment, browser-based end-to-end coverage, operational monitoring, backup/restore exercises, and production setup are not complete.
 
-Registry access recovered on October 14, 2026, and `pnpm-lock.yaml` was generated. CI actions were upgraded to v6 and the runner pinned to Ubuntu 24.04. Full application builds, migration execution, and integration/browser verification remain pending. Install the locked dependencies, start local services, and follow `local-development.md`. The first milestone is not accepted until the registration-to-private-dashboard flow and privacy integration tests run successfully.
-
-Later local verification on October 14 completed dependency installation, Prisma generation, all workspace typechecks, all application production builds, and the three security unit tests. The web homepage returned HTTP 200 and API liveness returned `ok`. PostgreSQL rejected the example credentials (`28P01`) and Redis was unavailable, so migrations and database-backed identity tests remain unverified. Development now builds its shared database dependency automatically, and the worker waits for Redis with reconnect backoff and throttled error logs.
-
-Staging deployment, full financial-domain authorization roles, and the remaining foundation operations are future work. No site, infrastructure, or production service has been deployed.
+See [delivery phases](delivery-phases.txt) for the planned sequence and acceptance criteria. Do not treat this local development slice as production-ready.

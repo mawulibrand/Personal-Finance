@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { Controller, Module, Get, Post, Body, Req, Res, Param, Injectable, Inject, UnauthorizedException, BadRequestException, NotFoundException, ServiceUnavailableException, Catch, HttpException } from '@nestjs/common';
+import { Controller, Module, Get, Post, Body, Req, Res, Param, Query, Injectable, Inject, UnauthorizedException, BadRequestException, NotFoundException, ForbiddenException, ConflictException, ServiceUnavailableException, Catch, HttpException } from '@nestjs/common';
 import type { ExceptionFilter, ArgumentsHost } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
@@ -10,6 +10,10 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { createDatabase, Prisma } from '@pf/database';
 import { hashPassword, verifyPassword, newToken, hashToken, mayAccessPersonalSpace } from './security.js';
+import { DEFAULT_CATEGORIES, normalizeCategoryName } from './categories.js';
+import { expectedPaydayDates, salaryPeriodStatus } from './income.js';
+import { nextRecurringDate } from './recurring.js';
+import { addDecimals, subtractDecimals } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
 const origin = required('WEB_ORIGIN');
@@ -18,12 +22,75 @@ if (production && !origin.startsWith('https://')) throw new Error('Production WE
 const db = createDatabase(required('DATABASE_URL'));
 const email = z.string().trim().toLowerCase().email().max(254);
 const password = z.string().min(12).max(128);
+const amount = z.string().regex(/^(?:0|[1-9]\d{0,14})(?:\.\d{1,4})?$/).refine(value => Number(value) > 0, 'Amount must be greater than zero.');
+const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}, 'Enter a valid date.');
+const incomeSourceInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  type: z.enum(['SALARY', 'SELF_EMPLOYMENT', 'BUSINESS', 'INVESTMENT', 'GIFT', 'OTHER']),
+  expectedAmount: amount.optional(),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default('GHS'),
+  paydayDays: z.array(z.number().int().min(1).max(31)).max(10).default([]),
+  adjustmentRule: z.enum(['PREVIOUS_WORKING_DAY', 'NEXT_WORKING_DAY', 'NO_ADJUSTMENT']).default('NO_ADJUSTMENT'),
+}).strict().superRefine((input, context) => {
+  if (input.type === 'SALARY') {
+    if (!input.expectedAmount) context.addIssue({ code: 'custom', path: ['expectedAmount'], message: 'Enter the expected salary amount.' });
+    if (!input.paydayDays.length) context.addIssue({ code: 'custom', path: ['paydayDays'], message: 'Add at least one possible payday.' });
+  } else if (input.paydayDays.length) {
+    context.addIssue({ code: 'custom', path: ['paydayDays'], message: 'Payday dates are only available for salary sources.' });
+  }
+  if (new Set(input.paydayDays).size !== input.paydayDays.length) {
+    context.addIssue({ code: 'custom', path: ['paydayDays'], message: 'Possible payday dates must be unique.' });
+  }
+});
+const incomeRecordInput = z.object({
+  amount,
+  receivedDate: dateOnly,
+  periodYear: z.number().int().min(2000).max(9999).optional(),
+  periodMonth: z.number().int().min(1).max(12).optional(),
+}).strict().superRefine((input, context) => {
+  if ((input.periodYear === undefined) !== (input.periodMonth === undefined)) {
+    context.addIssue({ code: 'custom', path: ['periodMonth'], message: 'Salary period year and month must be supplied together.' });
+  }
+});
+const expenseInput = z.object({
+  categoryId: z.string().uuid(),
+  amount,
+  spentAt: dateOnly,
+  description: z.string().trim().max(240).optional().transform(value => value || undefined),
+}).strict();
+const recurringInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  flow: z.enum(['INCOME', 'EXPENSE']),
+  amount,
+  frequency: z.enum(['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'YEARLY']),
+  startDate: dateOnly,
+  endDate: dateOnly.optional(),
+  categoryId: z.string().uuid().optional(),
+  sourceId: z.string().uuid().optional(),
+}).strict().superRefine((input, context) => {
+  if (input.endDate && input.endDate < input.startDate) context.addIssue({ code: 'custom', path: ['endDate'], message: 'End date must be on or after the start date.' });
+  if (input.flow === 'EXPENSE' && (!input.categoryId || input.sourceId)) context.addIssue({ code: 'custom', path: ['categoryId'], message: 'Choose an expense category only for recurring expenses.' });
+  if (input.flow === 'INCOME' && (!input.sourceId || input.categoryId)) context.addIssue({ code: 'custom', path: ['sourceId'], message: 'Choose an income source only for recurring income.' });
+});
+const monthPeriod = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+function monthParts(month: string) {
+  return { year: Number(month.slice(0, 4)), month: Number(month.slice(5, 7)) };
+}
+function monthBounds(month: string) {
+  const { year, month: monthNumber } = monthParts(month);
+  return { from: new Date(Date.UTC(year, monthNumber - 1, 1)), until: new Date(Date.UTC(year, monthNumber, 1)) };
+}
+function currentMonth() { return toDateOnly(new Date()).slice(0, 7); }
 function validate<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
-  if (!result.success) throw new BadRequestException('Please check the supplied fields. Passwords require 12–128 characters.');
+  if (!result.success) throw new BadRequestException('Please check the supplied fields.');
   return result.data;
 }
 const safeUser = (u: { id: string; name: string; email: string }) => ({ id: u.id, name: u.name, email: u.email });
+const toDateOnly = (date: Date) => date.toISOString().slice(0, 10);
 function setSession(res: Response, token: string) {
   res.cookie('pf_session', token, { httpOnly: true, secure: production, sameSite: 'lax', path: '/', maxAge: 7 * 86400000 });
 }
@@ -58,6 +125,7 @@ class Api {
       await db.$transaction(async tx => {
         const user = await tx.user.create({ data: { email: input.email, name: input.name, passwordHash } });
         const space = await tx.financialSpace.create({ data: { name: 'My Personal Space', type: 'PERSONAL', personalOwnerId: user.id, memberships: { create: { userId: user.id, role: 'OWNER' } } } });
+        await tx.category.createMany({ data: DEFAULT_CATEGORIES.map(category => ({ ...category, normalizedName: normalizeCategoryName(category.name), spaceId: space.id, isSystem: true })) });
         await queueEmail(tx, user.email, 'VERIFY_EMAIL', user.id);
         await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: space.id, action: 'REGISTER' } });
       });
@@ -137,13 +205,417 @@ class Api {
     const memberships = await db.membership.findMany({ where: { userId: user.id }, include: { space: true } });
     return memberships.filter(m => m.space.type !== 'PERSONAL' || mayAccessPersonalSpace(user.id, m.space.personalOwnerId)).map(m => ({ ...m.space, role: m.role }));
   }
-  @Get('spaces/:id/dashboard') async dashboard(@Req() req: Request, @Param('id') id: string) {
+  @Get('spaces/:id/dashboard') async dashboard(@Req() req: Request, @Param('id') id: string, @Query('month') month?: string) {
     const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const selectedMonth = validate(monthPeriod.default(currentMonth()), month);
+    const { from, until } = monthBounds(selectedMonth);
+    const range = { gte: from, lt: until };
+    const spaceCurrency = membership.space.baseCurrency.trim();
+    const incomeFilter = { source: { spaceId: membership.spaceId, currencyCode: spaceCurrency }, receivedDate: range };
+    const excludedIncomeFilter = { source: { spaceId: membership.spaceId, currencyCode: { not: spaceCurrency } }, receivedDate: range };
+    const [income, incomeCount, expenses, expenseCount, expenseGroups, budget] = await Promise.all([
+      db.incomeRecord.aggregate({ where: incomeFilter, _sum: { amount: true } }),
+      db.incomeRecord.count({ where: incomeFilter }),
+      db.expenseRecord.aggregate({ where: { spaceId: membership.spaceId, spentAt: range }, _sum: { amount: true } }),
+      db.expenseRecord.count({ where: { spaceId: membership.spaceId, spentAt: range } }),
+      db.expenseRecord.groupBy({ by: ['categoryId'], where: { spaceId: membership.spaceId, spentAt: range }, _sum: { amount: true } }),
+      db.budget.findUnique({
+        where: { spaceId_year_month: { spaceId: membership.spaceId, ...monthParts(selectedMonth) } },
+        include: { allocations: { include: { category: { select: { id: true, name: true } } } } },
+      }),
+    ]);
+    const excludedIncomeCount = await db.incomeRecord.count({ where: excludedIncomeFilter });
+    const categoryIds = [...new Set([...expenseGroups.map(group => group.categoryId), ...(budget?.allocations.map(allocation => allocation.categoryId) ?? [])])];
+    const categories = categoryIds.length ? await db.category.findMany({ where: { id: { in: categoryIds }, spaceId: membership.spaceId }, select: { id: true, name: true } }) : [];
+    const categoryNames = new Map(categories.map(category => [category.id, category.name]));
+    const spendingByCategory = new Map(expenseGroups.map(group => [group.categoryId, group._sum.amount?.toString() ?? '0']));
+    const incomeTotal = income._sum.amount?.toString() ?? '0';
+    const expenseTotal = expenses._sum.amount?.toString() ?? '0';
+    const allocations = budget?.allocations.map(allocation => {
+      const spent = spendingByCategory.get(allocation.categoryId) ?? '0';
+      const limit = allocation.limitAmount.toString();
+      return { categoryId: allocation.categoryId, category: allocation.category.name, limit, spent, remaining: subtractDecimals(limit, spent) };
+    }) ?? [];
+    const budgetLimit = addDecimals(...allocations.map(allocation => allocation.limit));
+    const budgetSpent = addDecimals(...allocations.map(allocation => allocation.spent));
+    return {
+      space: membership.space,
+      month: selectedMonth,
+      status: incomeCount || excludedIncomeCount || expenseCount ? 'READY' : 'NOT_ENOUGH_DATA',
+      income: { total: incomeTotal, count: incomeCount, excludedCurrencyCount: excludedIncomeCount },
+      expenses: {
+        total: expenseTotal,
+        count: expenseCount,
+        byCategory: expenseGroups.map(group => ({ categoryId: group.categoryId, category: categoryNames.get(group.categoryId) ?? 'Expense', total: group._sum.amount?.toString() ?? '0' })),
+      },
+      netCashFlow: subtractDecimals(incomeTotal, expenseTotal),
+      budget: { limit: budgetLimit, spent: budgetSpent, remaining: subtractDecimals(budgetLimit, budgetSpent), allocations },
+    };
+  }
+  private async spaceMembership(userId: string, id: string) {
     validate(z.string().uuid(), id);
-    const membership = await db.membership.findUnique({ where: { userId_spaceId: { userId: user.id, spaceId: id } }, include: { space: true } });
-    if (!membership) throw new NotFoundException();
-    if (membership.space.type === 'PERSONAL' && !mayAccessPersonalSpace(user.id, membership.space.personalOwnerId)) throw new NotFoundException();
-    return { space: membership.space, status: 'NOT_ENOUGH_DATA', message: 'Your space is ready. Income, expenses and budgets arrive in Phase 2.' };
+    const membership = await db.membership.findUnique({ where: { userId_spaceId: { userId, spaceId: id } }, include: { space: true } });
+    if (!membership || (membership.space.type === 'PERSONAL' && !mayAccessPersonalSpace(userId, membership.space.personalOwnerId))) throw new NotFoundException();
+    return membership;
+  }
+  @Get('spaces/:id/categories') async categories(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    return db.category.findMany({
+      where: { spaceId: membership.spaceId, isArchived: false },
+      orderBy: [{ type: 'asc' }, { isSystem: 'desc' }, { name: 'asc' }],
+      select: { id: true, name: true, type: true, isSystem: true, isArchived: true, createdAt: true },
+    });
+  }
+  @Post('spaces/:id/categories') async createCategory(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage categories in this space.');
+    const input = validate(z.object({ name: z.string().trim().min(1).max(60), type: z.enum(['INCOME', 'EXPENSE']) }).strict(), body);
+    try {
+      return await db.$transaction(async tx => {
+        const category = await tx.category.create({ data: { ...input, normalizedName: normalizeCategoryName(input.name), spaceId: membership.spaceId } });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'CATEGORY_CREATED' } });
+        return { id: category.id, name: category.name, type: category.type, isSystem: category.isSystem, isArchived: category.isArchived, createdAt: category.createdAt };
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('A category with this name and type already exists.');
+      throw error;
+    }
+  }
+  @Get('spaces/:id/income-sources') async incomeSources(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const sources = await db.incomeSource.findMany({
+      where: { spaceId: membership.spaceId, isActive: true },
+      include: { expectedPaydays: { orderBy: { sequence: 'asc' } }, records: { orderBy: { receivedDate: 'desc' }, take: 5 } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth() + 1;
+    const today = toDateOnly(now);
+    const currentSalaryRecords = sources.length ? await db.incomeRecord.findMany({
+      where: { sourceId: { in: sources.map(source => source.id) }, periodYear: year, periodMonth: month },
+    }) : [];
+    const currentRecordBySource = new Map(currentSalaryRecords.map(record => [record.sourceId, record]));
+    return sources.map(source => {
+      const record = currentRecordBySource.get(source.id);
+      const possibleDates = source.type === 'SALARY'
+        ? expectedPaydayDates(year, month, source.expectedPaydays)
+        : [];
+      return {
+        id: source.id,
+        name: source.name,
+        type: source.type,
+        expectedAmount: source.expectedAmount?.toString() ?? null,
+        currencyCode: source.currencyCode.trim(),
+        createdAt: source.createdAt,
+        possiblePaydays: source.expectedPaydays.map(item => ({ dayOfMonth: item.dayOfMonth, adjustmentRule: item.adjustmentRule })),
+        currentPeriod: source.type === 'SALARY' ? {
+          year,
+          month,
+          possibleDates,
+          status: salaryPeriodStatus(today, possibleDates, Boolean(record)),
+          record: record ? { id: record.id, amount: record.amount.toString(), receivedDate: toDateOnly(record.receivedDate) } : null,
+        } : null,
+        recentRecords: source.records.map(item => ({
+          id: item.id,
+          amount: item.amount.toString(),
+          receivedDate: toDateOnly(item.receivedDate),
+          periodYear: item.periodYear,
+          periodMonth: item.periodMonth,
+        })),
+      };
+    });
+  }
+  @Post('spaces/:id/income-sources') async createIncomeSource(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage income in this space.');
+    const input = validate(incomeSourceInput, body);
+    const sortedPaydayDays = [...input.paydayDays].sort((a, b) => a - b);
+    const source = await db.$transaction(async tx => {
+      const created = await tx.incomeSource.create({
+        data: {
+          spaceId: membership.spaceId,
+          name: input.name,
+          type: input.type,
+          expectedAmount: input.expectedAmount,
+          currencyCode: input.currencyCode,
+          expectedPaydays: { create: sortedPaydayDays.map((dayOfMonth, index) => ({ sequence: index + 1, dayOfMonth, adjustmentRule: input.adjustmentRule })) },
+        },
+        include: { expectedPaydays: { orderBy: { sequence: 'asc' } } },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'INCOME_SOURCE_CREATED' } });
+      return created;
+    });
+    return {
+      id: source.id,
+      name: source.name,
+      type: source.type,
+      expectedAmount: source.expectedAmount?.toString() ?? null,
+      currencyCode: source.currencyCode.trim(),
+      possiblePaydays: source.expectedPaydays.map(item => ({ dayOfMonth: item.dayOfMonth, adjustmentRule: item.adjustmentRule })),
+    };
+  }
+  @Post('spaces/:id/income-sources/:sourceId/records') async recordIncome(@Req() req: Request, @Param('id') id: string, @Param('sourceId') sourceId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record income in this space.');
+    const input = validate(incomeRecordInput, body);
+    const validSourceId = validate(z.string().uuid(), sourceId);
+    const source = await db.incomeSource.findFirst({ where: { id: validSourceId, spaceId: membership.spaceId, isActive: true } });
+    if (!source) throw new NotFoundException();
+    if (source.type === 'SALARY' && input.periodYear === undefined) {
+      throw new BadRequestException('Confirm salary for a specific month and year.');
+    }
+    if (source.type !== 'SALARY' && input.periodYear !== undefined) {
+      throw new BadRequestException('Only salary records have a salary period.');
+    }
+    if (input.receivedDate > toDateOnly(new Date())) throw new BadRequestException('Received date cannot be in the future.');
+    try {
+      const record = await db.$transaction(async tx => {
+        const created = await tx.incomeRecord.create({
+          data: {
+            sourceId: source.id,
+            amount: input.amount,
+            receivedDate: new Date(`${input.receivedDate}T00:00:00.000Z`),
+            periodYear: input.periodYear,
+            periodMonth: input.periodMonth,
+          },
+        });
+        await tx.auditEvent.create({
+          data: { actorUserId: user.id, spaceId: membership.spaceId, action: source.type === 'SALARY' ? 'SALARY_CONFIRMED' : 'INCOME_RECORDED' },
+        });
+        return created;
+      });
+      return { id: record.id, amount: record.amount.toString(), receivedDate: toDateOnly(record.receivedDate), periodYear: record.periodYear, periodMonth: record.periodMonth };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('Salary has already been confirmed for this month.');
+      }
+      throw error;
+    }
+  }
+  @Get('spaces/:id/recurring-records') async recurringRecords(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const today = toDateOnly(new Date());
+    const records = await db.recurringRecord.findMany({
+      where: { spaceId: membership.spaceId },
+      include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } } },
+      orderBy: [{ isActive: 'desc' }, { nextDueDate: 'asc' }, { name: 'asc' }],
+    });
+    return records.map(record => ({
+      id: record.id,
+      name: record.name,
+      flow: record.flow,
+      amount: record.amount.toString(),
+      currencyCode: record.currencyCode.trim(),
+      frequency: record.frequency,
+      startDate: toDateOnly(record.startDate),
+      nextDueDate: toDateOnly(record.nextDueDate),
+      endDate: record.endDate ? toDateOnly(record.endDate) : null,
+      isActive: record.isActive,
+      isDue: record.isActive && toDateOnly(record.nextDueDate) <= today,
+      category: record.category,
+      source: record.source,
+    }));
+  }
+  @Post('spaces/:id/recurring-records') async createRecurringRecord(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage recurring records in this space.');
+    const input = validate(recurringInput, body);
+    let categoryId: string | undefined;
+    let sourceId: string | undefined;
+    if (input.flow === 'EXPENSE') {
+      const category = await db.category.findFirst({ where: { id: input.categoryId, spaceId: membership.spaceId, type: 'EXPENSE', isArchived: false }, select: { id: true } });
+      if (!category) throw new BadRequestException('Choose an active expense category in this space.');
+      categoryId = category.id;
+    } else {
+      const source = await db.incomeSource.findFirst({ where: { id: input.sourceId, spaceId: membership.spaceId, isActive: true, type: { not: 'SALARY' } }, select: { id: true, currencyCode: true } });
+      if (!source) throw new BadRequestException('Choose an active non-salary income source in this space. Salary is confirmed from the income screen.');
+      if (source.currencyCode.trim() !== membership.space.baseCurrency.trim()) throw new BadRequestException('Recurring income must use the financial space base currency.');
+      sourceId = source.id;
+    }
+    const record = await db.$transaction(async tx => {
+      const created = await tx.recurringRecord.create({
+        data: {
+          spaceId: membership.spaceId,
+          name: input.name,
+          flow: input.flow,
+          amount: input.amount,
+          currencyCode: membership.space.baseCurrency,
+          frequency: input.frequency,
+          startDate: new Date(`${input.startDate}T00:00:00.000Z`),
+          nextDueDate: new Date(`${input.startDate}T00:00:00.000Z`),
+          endDate: input.endDate ? new Date(`${input.endDate}T00:00:00.000Z`) : undefined,
+          dayOfMonth: Number(input.startDate.slice(8, 10)),
+          monthOfYear: Number(input.startDate.slice(5, 7)),
+          categoryId,
+          sourceId,
+          createdBy: user.id,
+        },
+        include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } } },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'RECURRING_RECORD_CREATED' } });
+      return created;
+    });
+    return { id: record.id, name: record.name, flow: record.flow, amount: record.amount.toString(), currencyCode: record.currencyCode.trim(), frequency: record.frequency, startDate: toDateOnly(record.startDate), nextDueDate: toDateOnly(record.nextDueDate), endDate: record.endDate ? toDateOnly(record.endDate) : null, isActive: record.isActive, category: record.category, source: record.source };
+  }
+  @Post('spaces/:id/recurring-records/:recordId/status') async setRecurringStatus(@Req() req: Request, @Param('id') id: string, @Param('recordId') recordId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage recurring records in this space.');
+    const { isActive } = validate(z.object({ isActive: z.boolean() }).strict(), body);
+    const validId = validate(z.string().uuid(), recordId);
+    const existing = await db.recurringRecord.findFirst({ where: { id: validId, spaceId: membership.spaceId } });
+    if (!existing) throw new NotFoundException();
+    if (isActive && existing.endDate && toDateOnly(existing.endDate) < toDateOnly(new Date())) throw new BadRequestException('This recurring record has passed its end date.');
+    const updated = await db.$transaction(async tx => {
+      const result = await tx.recurringRecord.update({ where: { id: existing.id }, data: { isActive } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: isActive ? 'RECURRING_RECORD_RESUMED' : 'RECURRING_RECORD_PAUSED' } });
+      return result;
+    });
+    return { id: updated.id, isActive: updated.isActive };
+  }
+  @Post('spaces/:id/recurring-records/:recordId/record') async recordRecurringOccurrence(@Req() req: Request, @Param('id') id: string, @Param('recordId') recordId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record transactions in this space.');
+    const input = validate(z.object({ actualDate: dateOnly.optional() }).strict(), body);
+    const validId = validate(z.string().uuid(), recordId);
+    const rule = await db.recurringRecord.findFirst({ where: { id: validId, spaceId: membership.spaceId, isActive: true } });
+    if (!rule) throw new NotFoundException();
+    const dueDate = toDateOnly(rule.nextDueDate);
+    const today = toDateOnly(new Date());
+    const actualDate = input.actualDate ?? today;
+    if (dueDate > today) throw new BadRequestException('This recurring record is not due yet.');
+    if (actualDate < toDateOnly(rule.startDate) || actualDate > today) throw new BadRequestException('Enter an actual date between the start date and today.');
+    const nextDueDate = nextRecurringDate(dueDate, rule.frequency, rule.dayOfMonth, rule.monthOfYear);
+    const isActive = !rule.endDate || nextDueDate <= toDateOnly(rule.endDate);
+    try {
+      const result = await db.$transaction(async tx => {
+        const occurrenceData = { recurringRecordId: rule.id, dueDate: new Date(`${dueDate}T00:00:00.000Z`), actualDate: new Date(`${actualDate}T00:00:00.000Z`) };
+        const transaction = rule.flow === 'EXPENSE'
+          ? await tx.expenseRecord.create({
+            data: { space: { connect: { id: membership.spaceId } }, category: { connect: { id: rule.categoryId! } }, creator: { connect: { id: user.id } }, amount: rule.amount, currencyCode: rule.currencyCode, spentAt: new Date(`${actualDate}T00:00:00.000Z`), description: rule.name, recurringOccurrence: { create: occurrenceData } },
+          })
+          : await tx.incomeRecord.create({
+            data: { source: { connect: { id: rule.sourceId! } }, amount: rule.amount, receivedDate: new Date(`${actualDate}T00:00:00.000Z`), recurringOccurrence: { create: occurrenceData } },
+          });
+        const advanced = await tx.recurringRecord.updateMany({
+          where: { id: rule.id, spaceId: membership.spaceId, isActive: true, nextDueDate: new Date(`${dueDate}T00:00:00.000Z`) },
+          data: { nextDueDate: new Date(`${nextDueDate}T00:00:00.000Z`), isActive },
+        });
+        if (advanced.count !== 1) throw new ConflictException('This recurring date has already been recorded.');
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: rule.flow === 'EXPENSE' ? 'RECURRING_EXPENSE_RECORDED' : 'RECURRING_INCOME_RECORDED' } });
+        return transaction;
+      });
+      return { id: result.id, amount: result.amount.toString(), actualDate, dueDate, flow: rule.flow };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('This recurring date has already been recorded.');
+      throw error;
+    }
+  }
+  @Get('spaces/:id/budgets') async budgets(@Req() req: Request, @Param('id') id: string, @Query('month') month?: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const selectedMonth = validate(monthPeriod.default(currentMonth()), month);
+    const { from, until } = monthBounds(selectedMonth);
+    const { year, month: monthNumber } = monthParts(selectedMonth);
+    const [budget, groups] = await Promise.all([
+      db.budget.findUnique({ where: { spaceId_year_month: { spaceId: membership.spaceId, year, month: monthNumber } }, include: { allocations: { include: { category: { select: { id: true, name: true } } } } } }),
+      db.expenseRecord.groupBy({ by: ['categoryId'], where: { spaceId: membership.spaceId, spentAt: { gte: from, lt: until } }, _sum: { amount: true } }),
+    ]);
+    const spentByCategory = new Map(groups.map(group => [group.categoryId, group._sum.amount?.toString() ?? '0']));
+    const allocations = budget?.allocations.map(allocation => {
+      const limit = allocation.limitAmount.toString();
+      const spent = spentByCategory.get(allocation.categoryId) ?? '0';
+      return { id: allocation.id, categoryId: allocation.categoryId, category: allocation.category, limit, spent, remaining: subtractDecimals(limit, spent) };
+    }) ?? [];
+    return { month: selectedMonth, currencyCode: membership.space.baseCurrency.trim(), totalLimit: addDecimals(...allocations.map(allocation => allocation.limit)), totalSpent: addDecimals(...allocations.map(allocation => allocation.spent)), allocations };
+  }
+  @Post('spaces/:id/budgets/allocations') async setBudgetAllocation(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage budgets in this space.');
+    const input = validate(z.object({ month: monthPeriod, categoryId: z.string().uuid(), limitAmount: amount }).strict(), body);
+    const category = await db.category.findFirst({ where: { id: input.categoryId, spaceId: membership.spaceId, type: 'EXPENSE', isArchived: false }, select: { id: true } });
+    if (!category) throw new BadRequestException('Choose an active expense category in this space.');
+    const { year, month } = monthParts(input.month);
+    const allocation = await db.$transaction(async tx => {
+      const budget = await tx.budget.upsert({
+        where: { spaceId_year_month: { spaceId: membership.spaceId, year, month } },
+        create: { spaceId: membership.spaceId, year, month, createdBy: user.id },
+        update: {},
+      });
+      const saved = await tx.budgetAllocation.upsert({
+        where: { budgetId_categoryId: { budgetId: budget.id, categoryId: category.id } },
+        create: { budgetId: budget.id, categoryId: category.id, limitAmount: input.limitAmount },
+        update: { limitAmount: input.limitAmount },
+        include: { category: { select: { id: true, name: true } } },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'BUDGET_ALLOCATION_SET' } });
+      return saved;
+    });
+    return { id: allocation.id, category: allocation.category, limit: allocation.limitAmount.toString() };
+  }
+  @Get('spaces/:id/expenses') async expenses(@Req() req: Request, @Param('id') id: string, @Query('month') month?: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const selectedMonth = validate(z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).default(toDateOnly(new Date()).slice(0, 7)), month);
+    const { from, until } = monthBounds(selectedMonth);
+    const [records, total] = await Promise.all([
+      db.expenseRecord.findMany({
+        where: { spaceId: membership.spaceId, spentAt: { gte: from, lt: until } },
+        include: { category: { select: { id: true, name: true } } },
+        orderBy: [{ spentAt: 'desc' }, { createdAt: 'desc' }],
+      }),
+      db.expenseRecord.aggregate({ where: { spaceId: membership.spaceId, spentAt: { gte: from, lt: until } }, _sum: { amount: true } }),
+    ]);
+    return {
+      month: selectedMonth,
+      currencyCode: membership.space.baseCurrency.trim(),
+      total: total._sum.amount?.toString() ?? '0',
+      records: records.map(record => ({
+        id: record.id,
+        category: record.category,
+        amount: record.amount.toString(),
+        currencyCode: record.currencyCode.trim(),
+        spentAt: toDateOnly(record.spentAt),
+        description: record.description,
+      })),
+    };
+  }
+  @Post('spaces/:id/expenses') async recordExpense(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record expenses in this space.');
+    const input = validate(expenseInput, body);
+    if (input.spentAt > toDateOnly(new Date())) throw new BadRequestException('Expense date cannot be in the future.');
+    const category = await db.category.findFirst({ where: { id: input.categoryId, spaceId: membership.spaceId, type: 'EXPENSE', isArchived: false }, select: { id: true } });
+    if (!category) throw new BadRequestException('Choose an active expense category in this space.');
+    const record = await db.$transaction(async tx => {
+      const created = await tx.expenseRecord.create({
+        data: {
+          spaceId: membership.spaceId,
+          categoryId: category.id,
+          amount: input.amount,
+          currencyCode: membership.space.baseCurrency,
+          spentAt: new Date(`${input.spentAt}T00:00:00.000Z`),
+          description: input.description,
+          createdBy: user.id,
+        },
+        include: { category: { select: { id: true, name: true } } },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'EXPENSE_RECORDED' } });
+      return created;
+    });
+    return { id: record.id, category: record.category, amount: record.amount.toString(), currencyCode: record.currencyCode.trim(), spentAt: toDateOnly(record.spentAt), description: record.description };
   }
 }
 const dummyHash = hashPassword(newToken());

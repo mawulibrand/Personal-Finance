@@ -1,0 +1,175 @@
+.page {
+  padding-top: 48px !important;
+}
+
+.page h1 {
+  margin: 14px 0;
+  font-family: Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+}
+
+.panel {
+  margin: 24px 0;
+  padding: 26px 28px;
+  border: 1px solid #dce1d7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.panel h2 {
+  margin: 0 0 8px;
+  font-size: 23px;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 20px;
+}
+
+.form label,
+.confirmForm label {
+  margin: 10px 0;
+}
+
+.form input,
+.form select,
+.confirmForm input {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.form small {
+  display: block;
+  margin-top: 6px;
+  color: #64746c;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.form button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  width: auto;
+  min-width: 175px;
+}
+
+.optional {
+  color: #78857c;
+  font-weight: 400;
+}
+
+.records {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 20px;
+}
+
+.records .panel {
+  margin: 0;
+}
+
+.recordHeading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.recordHeading h2 {
+  margin: 9px 0 5px;
+}
+
+.recordHeading p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.recordAmount {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.recordAmount strong {
+  font-size: 16px;
+}
+
+.recordAmount .tag {
+  color: #536c5c;
+}
+
+.confirmForm {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0e9;
+}
+
+.confirmForm button {
+  width: auto;
+  padding: 13px 15px;
+  font-size: 12px;
+}
+
+.pauseButton {
+  width: auto;
+  padding: 10px 0 0;
+  background: transparent;
+  color: #245c48;
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 32px !important;
+  }
+
+  .page h1 {
+    font-size: 38px;
+  }
+
+  .panel {
+    padding: 21px;
+  }
+
+  .form,
+  .records {
+    grid-template-columns: 1fr;
+  }
+
+  .form button {
+    grid-column: auto;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .recordHeading {
+    flex-direction: column;
+  }
+
+  .recordAmount {
+    justify-items: start;
+  }
+
+  .confirmForm {
+    grid-template-columns: 1fr;
+  }
+
+  .confirmForm button {
+    width: 100%;
+  }
+}

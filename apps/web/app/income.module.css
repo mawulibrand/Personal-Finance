@@ -1,0 +1,184 @@
+.page {
+  padding-top: 48px !important;
+}
+
+.page h1 {
+  font-family: Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+  margin: 14px 0;
+}
+
+.page > .muted {
+  max-width: 760px;
+}
+
+.panel {
+  margin: 26px 0;
+  padding: 28px;
+  background: white;
+  border: 1px solid #dce1d7;
+  border-radius: 12px;
+}
+
+.panel h2 {
+  margin: 0 0 20px;
+  font-size: 27px;
+}
+
+.form,
+.recordForm {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 16px 20px;
+}
+
+.form label,
+.recordForm label {
+  margin: 0;
+}
+
+.form input,
+.form select,
+.recordForm input {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: white;
+  color: #18332b;
+}
+
+.form small {
+  display: block;
+  margin-top: 6px;
+  color: #64746c;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.form button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  width: auto;
+  min-width: 190px;
+}
+
+.sources {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  align-items: start;
+}
+
+.sources .panel {
+  margin: 0;
+}
+
+.sourceHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.sourceHeading h2 {
+  margin: 8px 0 0;
+}
+
+.sourceHeading .tag {
+  flex: 0 0 auto;
+  color: #536c5c;
+}
+
+.payday {
+  margin: 18px 0 22px;
+  padding: 16px;
+  background: #f3f6ef;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.payday p {
+  margin: 6px 0 0;
+  color: #64746c;
+}
+
+.recordForm {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 18px;
+  border-top: 1px solid #edf0e9;
+}
+
+.recordForm button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  width: auto;
+}
+
+.history {
+  margin-top: 22px;
+  border-top: 1px solid #edf0e9;
+  padding-top: 16px;
+}
+
+.history h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.history ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.history li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  color: #64746c;
+  font-size: 13px;
+}
+
+.history li strong {
+  color: #18332b;
+  font-weight: 600;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 32px !important;
+  }
+
+  .page h1 {
+    font-size: 38px;
+  }
+
+  .form,
+  .recordForm,
+  .sources {
+    grid-template-columns: 1fr;
+  }
+
+  .form button,
+  .recordForm button {
+    grid-column: auto;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .panel {
+    padding: 22px;
+  }
+
+  .sourceHeading {
+    flex-direction: column;
+  }
+}

@@ -1,0 +1,313 @@
+.layout {
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 20;
+  display: flex;
+  width: 252px;
+  flex-direction: column;
+  padding: 30px 20px 22px;
+  background: #143d32;
+  color: #f7f8f3;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -.35px;
+  text-decoration: none;
+}
+
+.brand span {
+  color: #c9e38d;
+  font-size: 22px;
+}
+
+.navLabel {
+  margin: 48px 10px 12px;
+  color: #a7c3b4;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.7px;
+}
+
+.nav {
+  display: grid;
+  gap: 5px;
+}
+
+.nav a,
+.nav span {
+  display: block;
+  padding: 12px 13px;
+  border-radius: 7px;
+  color: #e1ebe4;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.nav a:hover,
+.nav a[aria-current="page"] {
+  background: #255344;
+  color: #fff;
+}
+
+.nav span {
+  color: #a8b9ae;
+  cursor: default;
+}
+
+.sidebarFooter {
+  margin-top: auto;
+}
+
+.signOut {
+  width: 100%;
+  padding: 13px;
+  border: 1px solid #4c7263;
+  background: transparent;
+  text-align: left;
+}
+
+.signOut span {
+  color: #c9e38d;
+}
+
+.content {
+  min-height: 100vh;
+  margin-left: 252px;
+  padding: 1px 34px;
+}
+
+.content :global(.dashboard > header) {
+  display: none;
+}
+
+.page > p.muted {
+  max-width: 760px;
+}
+
+.dashboard {
+  max-width: 1160px;
+  margin: auto;
+  padding: 24px 40px !important;
+}
+
+.dashboardHeading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.dashboardHeading h1 {
+  margin: 14px 0;
+  font-family: Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+}
+
+.dashboardHeading > label {
+  flex: 0 0 190px;
+  margin: 0 0 8px;
+}
+
+.dashboardHeading input {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 30px 0 24px;
+}
+
+.metricCard,
+.panel {
+  padding: 23px;
+  border: 1px solid #dce1d7;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.metricCard {
+  display: grid;
+  gap: 10px;
+}
+
+.metricCard > span,
+.metricCard small {
+  color: #64746c;
+  font-size: 12px;
+}
+
+.metricCard strong {
+  overflow-wrap: anywhere;
+  font-size: clamp(20px, 2vw, 28px);
+  font-weight: 600;
+}
+
+.dashboardPanels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.panelHeading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panelHeading .eyebrow {
+  margin: 0 0 9px;
+}
+
+.panelHeading h2 {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: 25px;
+  font-weight: 400;
+}
+
+.panelHeading a {
+  color: #245c48;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.breakdown {
+  padding: 0;
+  margin: 20px 0 0;
+  list-style: none;
+}
+
+.breakdown li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid #edf0e9;
+  font-size: 14px;
+}
+
+.breakdown li > span {
+  display: grid;
+  gap: 6px;
+}
+
+.breakdown small {
+  color: #64746c;
+  font-size: 12px;
+}
+
+.mobileBar {
+  display: none;
+}
+
+.menuToggle {
+  width: auto;
+  padding: 10px 14px;
+}
+
+@media (max-width: 760px) {
+  .sidebar {
+    inset: 66px 0 0 auto;
+    width: min(300px, 88vw);
+    padding: 22px;
+    box-shadow: -15px 15px 35px #102e2540;
+    visibility: hidden;
+    transform: translateX(110%);
+    transition: transform 160ms ease-out, visibility 160ms ease-out;
+  }
+
+  .sidebarOpen {
+    visibility: visible;
+    transform: translateX(0);
+  }
+
+  .sidebar > .brand {
+    display: none;
+  }
+
+  .navLabel {
+    margin-top: 24px;
+  }
+
+  .mobileBar {
+    position: sticky;
+    top: 0;
+    z-index: 21;
+    display: flex;
+    height: 66px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    border-bottom: 1px solid #dce1d7;
+    background: #f7f8f3;
+  }
+
+  .mobileBar .brand {
+    color: #143d32;
+  }
+
+  .content {
+    margin-left: 0;
+    padding: 1px 0;
+  }
+
+  .content :global(.dashboard) {
+    padding: 20px;
+  }
+
+  .dashboard {
+    padding: 30px 20px !important;
+  }
+
+  .dashboardHeading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .dashboardHeading h1 {
+    font-size: 38px;
+  }
+
+  .dashboardHeading > label {
+    flex-basis: auto;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 20px;
+  }
+
+  .metricCard,
+  .panel {
+    padding: 17px;
+  }
+
+  .dashboardPanels {
+    grid-template-columns: 1fr;
+  }
+}
