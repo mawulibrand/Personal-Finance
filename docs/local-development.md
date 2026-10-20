@@ -10,10 +10,14 @@ Node.js 24, pnpm 10.17.1, and Docker Compose. On Windows use `pnpm.cmd` if Power
 2. Run `docker compose up -d` to start PostgreSQL, Redis, and Mailpit.
 3. Run `pnpm install`.
 4. Run `pnpm db:generate`, then `pnpm db:deploy`.
-5. Run `pnpm build`, then `pnpm dev`.
+5. Run `pnpm dev` (or `npm run dev`). The dev task builds the shared database package before starting the applications.
 6. Open http://localhost:3000. Register, open Mailpit at http://localhost:8025, verify your email, and sign in.
 
 The API listens on port 4000. The web server proxies `/api` requests; no browser-readable session token is exposed. Changes to the shared database package require rebuilding it.
+
+If Windows reports that `next` or `tsx` is not recognized, the workspace dependencies are missing or installation was interrupted. Run `pnpm.cmd install --frozen-lockfile` from the repository root. Generating a lockfile alone does not install these executables. Avoid `npm install` for this pnpm workspace.
+
+Run `node --env-file=.env scripts/check-local-services.mjs` to check the configured local services without printing credentials. PostgreSQL error `28P01` means authentication failed: set `DATABASE_URL` to a valid user/password/database for your local PostgreSQL instance. Redis must also be started at the configured `REDIS_URL`; the email worker waits for it and uses reconnect backoff.
 
 ## Verification
 

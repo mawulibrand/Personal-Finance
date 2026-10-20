@@ -3,7 +3,8 @@
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**", ".next/**", "!.next/cache/**"] },
     "typecheck": { "dependsOn": ["^build"] },
+    "@pf/database#typecheck": { "dependsOn": ["build"] },
     "test": { "dependsOn": ["^build"], "outputs": ["coverage/**"] },
-    "dev": { "cache": false, "persistent": true }
+    "dev": { "dependsOn": ["^build"], "cache": false, "persistent": true }
   }
 }

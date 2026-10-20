@@ -26,4 +26,6 @@ Dependency installation repeatedly failed with npm registry DNS/connection error
 
 Registry access recovered on October 14, 2026, and `pnpm-lock.yaml` was generated. CI actions were upgraded to v6 and the runner pinned to Ubuntu 24.04. Full application builds, migration execution, and integration/browser verification remain pending. Install the locked dependencies, start local services, and follow `local-development.md`. The first milestone is not accepted until the registration-to-private-dashboard flow and privacy integration tests run successfully.
 
+Later local verification on October 14 completed dependency installation, Prisma generation, all workspace typechecks, all application production builds, and the three security unit tests. The web homepage returned HTTP 200 and API liveness returned `ok`. PostgreSQL rejected the example credentials (`28P01`) and Redis was unavailable, so migrations and database-backed identity tests remain unverified. Development now builds its shared database dependency automatically, and the worker waits for Redis with reconnect backoff and throttled error logs.
+
 Staging deployment, full financial-domain authorization roles, and the remaining foundation operations are future work. No site, infrastructure, or production service has been deployed.
