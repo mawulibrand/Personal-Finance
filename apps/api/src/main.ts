@@ -956,6 +956,6 @@ async function main() {
   });
   app.use('/auth', rateLimit({ windowMs: 15 * 60000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false }));
   app.enableShutdownHooks();
-  await app.listen(Number(process.env.API_PORT ?? 4000), '0.0.0.0');
+  await app.listen(Number(process.env.PORT ?? process.env.API_PORT ?? 4000), '0.0.0.0');
 }
 main().catch(() => { process.stderr.write('API startup failed. Check configuration and service availability.\n'); process.exitCode = 1; });
