@@ -42,11 +42,15 @@ If the build log shows `npm install --prefix=../..` followed by `No Next.js vers
 
 Create a second Vercel project from the same repository for the API. Set its **Root Directory** to `apps/api`, select **NestJS** as the framework preset (or leave auto-detection enabled), and select Node.js 24. Use:
 
-- **Install Command:** `pnpm install --frozen-lockfile`
-- **Build Command:** `pnpm --filter @pf/api build`
+- **Install Command field only:** `pnpm install --frozen-lockfile`
+- **Build Command field only:** `pnpm --filter @pf/api build`
 - **Output Directory:** leave the default
 
+Enter the commands as plain text with no Markdown backticks, quotes, commas, or prompt/output characters such as `>`. Do not combine the install and build commands in one field.
+
 Keep the pnpm workspace and root lockfile available to the build. The API build script builds `@pf/database` first, which generates the Prisma client and the shared package output. Prisma client generation uses a local placeholder datasource URL when no `DATABASE_URL` is set; it does not connect to the database. Migration commands still require the real Neon `DATABASE_URL`. Vercel supports NestJS as a serverless function and detects the API entrypoint at `src/main.ts`.
+
+If Vercel reports that the default `helmet` import is not callable, the API uses an explicit default-export import to avoid differences in how the build resolves Helmet's ESM/CommonJS type declarations.
 
 Set these Vercel environment variables on the API project:
 

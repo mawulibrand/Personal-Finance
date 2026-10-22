@@ -5,7 +5,7 @@ import type { ExceptionFilter, ArgumentsHost } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
-import helmet from 'helmet';
+import { default as helmet } from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { createDatabase, Prisma } from '@pf/database';
