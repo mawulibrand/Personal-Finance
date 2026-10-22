@@ -46,7 +46,7 @@ Create a second Vercel project from the same repository for the API. Set its **R
 - **Build Command:** `pnpm --filter @pf/api build`
 - **Output Directory:** leave the default
 
-Keep the pnpm workspace and root lockfile available to the build. The API build script builds `@pf/database` first, which generates the Prisma client and the shared package output. Vercel supports NestJS as a serverless function and detects the API entrypoint at `src/main.ts`.
+Keep the pnpm workspace and root lockfile available to the build. The API build script builds `@pf/database` first, which generates the Prisma client and the shared package output. Prisma client generation uses a local placeholder datasource URL when no `DATABASE_URL` is set; it does not connect to the database. Migration commands still require the real Neon `DATABASE_URL`. Vercel supports NestJS as a serverless function and detects the API entrypoint at `src/main.ts`.
 
 Set these Vercel environment variables on the API project:
 

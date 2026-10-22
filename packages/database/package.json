@@ -1,7 +1,7 @@
 {
   "name": "@pf/database", "private": true, "type": "module",
   "exports": "./dist/index.js",
-  "scripts": { "generate": "prisma generate", "migrate": "prisma migrate dev", "deploy": "prisma migrate deploy", "build": "prisma generate && tsc", "typecheck": "tsc --noEmit" },
+  "scripts": { "generate": "node scripts/generate-client.mjs", "migrate": "prisma migrate dev", "deploy": "prisma migrate deploy", "build": "pnpm generate && tsc", "typecheck": "tsc --noEmit" },
   "dependencies": { "@prisma/client": "7.10.0", "@prisma/adapter-pg": "7.10.0", "pg": "8.16.3", "dotenv": "17.2.3" },
   "devDependencies": { "prisma": "7.10.0", "@types/pg": "8.15.6" }
 }
