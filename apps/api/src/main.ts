@@ -5,7 +5,7 @@ import type { ExceptionFilter, ArgumentsHost } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
-import { default as helmet } from 'helmet';
+import * as helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { createDatabase, Prisma } from '@pf/database';
@@ -941,7 +941,7 @@ class SafeErrors implements ExceptionFilter {
 }
 async function main() {
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
-  app.use(helmet());
+  app.use(helmet.default());
   app.use(cookieParser());
   app.enableCors({ origin, credentials: true });
   app.useGlobalFilters(new SafeErrors());
