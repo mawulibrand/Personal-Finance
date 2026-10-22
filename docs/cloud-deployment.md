@@ -50,7 +50,7 @@ Enter the commands as plain text with no Markdown backticks, quotes, commas, or 
 
 Keep the pnpm workspace and root lockfile available to the build. The API build script builds `@pf/database` first, which generates the Prisma client and the shared package output. Prisma client generation uses a local placeholder datasource URL when no `DATABASE_URL` is set; it does not connect to the database. Migration commands still require the real Neon `DATABASE_URL`. Vercel supports NestJS as a serverless function and detects the API entrypoint at `src/main.ts`.
 
-The API imports Helmet as a module namespace and calls its declared `default` export explicitly. This avoids Vercel's TypeScript check treating the default import as the module namespace rather than the middleware function.
+The API loads Helmet through Node's CommonJS `createRequire` and verifies its export is a function before using it. This avoids Vercel's TypeScript check resolving Helmet's default export as the module namespace.
 
 Set these Vercel environment variables on the API project:
 

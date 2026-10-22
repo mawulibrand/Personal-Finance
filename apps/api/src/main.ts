@@ -3,9 +3,9 @@ import { NestFactory } from '@nestjs/core';
 import { Controller, Module, Get, Post, Body, Req, Res, Param, Query, Injectable, Inject, UnauthorizedException, BadRequestException, NotFoundException, ForbiddenException, ConflictException, ServiceUnavailableException, Catch, HttpException } from '@nestjs/common';
 import type { ExceptionFilter, ArgumentsHost } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { Request, Response } from 'express';
+import { createRequire } from 'node:module';
+import type { Request, RequestHandler, Response } from 'express';
 import cookieParser from 'cookie-parser';
-import * as helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { createDatabase, Prisma } from '@pf/database';
@@ -16,6 +16,9 @@ import { nextRecurringDate } from './recurring.js';
 import { addDecimals, decimalToUnits, subtractDecimals } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
+const helmetExport: unknown = createRequire(import.meta.url)('helmet');
+if (typeof helmetExport !== 'function') throw new TypeError('Helmet CommonJS export is not a middleware factory');
+const helmet = helmetExport as () => RequestHandler;
 const origin = required('WEB_ORIGIN');
 const production = process.env.NODE_ENV === 'production';
 if (production && !origin.startsWith('https://')) throw new Error('Production WEB_ORIGIN requires HTTPS');
@@ -941,7 +944,7 @@ class SafeErrors implements ExceptionFilter {
 }
 async function main() {
   const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
-  app.use(helmet.default());
+  app.use(helmet());
   app.use(cookieParser());
   app.enableCors({ origin, credentials: true });
   app.useGlobalFilters(new SafeErrors());
