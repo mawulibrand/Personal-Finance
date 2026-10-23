@@ -244,6 +244,67 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(portfolioAnalytics.body.currencies[0].absoluteReturn, 116);
   assert.equal(portfolioAnalytics.body.currencies[0].contributions.investmentIncome, 0);
   assert.equal(portfolioAnalytics.body.currencies[0].explanations.xirr.formula.includes('bounded bisection'), true);
+  const financialReviewsPath = `spaces/${spaces.body[0].id}/financial-reviews`;
+  assert.equal((await request(financialReviewsPath)).status, 401);
+  for (const monthOffset of [-3, -2, -1]) {
+    const historicDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + monthOffset, 15)).toISOString().slice(0, 10);
+    assert.equal((await request(`${incomePath}/${selfEmployment.body.id}/records`, { amount: '100', receivedDate: historicDate }, login.cookie)).status, 201);
+    assert.equal((await request(expensesPath, { categoryId: customCategory.body.id, amount: '200', spentAt: historicDate }, login.cookie)).status, 201);
+  }
+  const review = await request(financialReviewsPath, { trigger: 'ON_DEMAND' }, login.cookie);
+  assert.equal(review.status, 201);
+  assert.equal(review.body.profile.currencyCode, 'GHS');
+  assert.equal(review.body.profile.monthlyIncome, 100);
+  assert.equal(review.body.profile.monthlyExpenses, 200);
+  assert.equal(review.body.profile.monthlyCashFlow, -100);
+  assert.equal(review.body.strategies.length, 3);
+  assert.equal(review.body.strategies[0].code, 'EXPENSES_EXCEED_INCOME');
+  const strategy = review.body.strategies[0];
+  assert.equal((await request(`${financialReviewsPath}/${review.body.id}/strategies/${strategy.id}/response`, {
+    decision: 'MODIFIED',
+  }, login.cookie)).status, 400);
+  const strategyResponse = await request(`${financialReviewsPath}/${review.body.id}/strategies/${strategy.id}/response`, {
+    decision: 'MODIFIED', feedback: 'HELPFUL', userNote: 'Check the records and revisit the flexible spending categories.',
+  }, login.cookie);
+  assert.equal(strategyResponse.status, 201);
+  assert.equal(strategyResponse.body.decision, 'MODIFIED');
+  assert.equal(strategyResponse.body.feedback, 'HELPFUL');
+  const monthlyReview = await request(financialReviewsPath, { trigger: 'MONTHLY' }, login.cookie);
+  assert.equal(monthlyReview.status, 201);
+  const duplicateMonthlyReview = await request(financialReviewsPath, { trigger: 'MONTHLY' }, login.cookie);
+  assert.equal(duplicateMonthlyReview.body.id, monthlyReview.body.id);
+  assert.equal((await request(financialReviewsPath, undefined, login.cookie)).body.length, 2);
+  const scenariosPath = `spaces/${spaces.body[0].id}/scenarios`;
+  assert.equal((await request(scenariosPath)).status, 401);
+  assert.equal((await request(scenariosPath, {
+    name: 'Invalid return', startingCapital: '0', recurringContribution: '100', contributionFrequency: 'MONTHLY',
+    expectedAnnualReturn: '101', durationYears: 10,
+  }, login.cookie)).status, 400);
+  const steadyScenario = await request(scenariosPath, {
+    name: 'Steady plan', startingCapital: '1000', recurringContribution: '100', contributionFrequency: 'MONTHLY',
+    expectedAnnualReturn: '5', durationYears: 10, inflationRate: '2', annualContributionGrowth: '3',
+  }, login.cookie);
+  assert.equal(steadyScenario.status, 201);
+  assert.equal(steadyScenario.body.currencyCode, 'GHS');
+  assert.equal(steadyScenario.body.projection.length, 10);
+  assert.ok(steadyScenario.body.projection[0].nominalValue > 2200);
+  assert.ok(steadyScenario.body.projection[0].inflationAdjustedValue < steadyScenario.body.projection[0].nominalValue);
+  const alternativeScenario = await request(scenariosPath, {
+    name: 'No growth alternative', startingCapital: '0', recurringContribution: '200', contributionFrequency: 'MONTHLY',
+    expectedAnnualReturn: '0', durationYears: 10,
+  }, login.cookie);
+  assert.equal(alternativeScenario.status, 201);
+  const comparedScenarios = await request(scenariosPath, undefined, login.cookie);
+  assert.equal(comparedScenarios.status, 200);
+  assert.equal(comparedScenarios.body.length, 2);
+  const convertedScenario = await request(`${scenariosPath}/${steadyScenario.body.id}/convert`, {}, login.cookie);
+  assert.equal(convertedScenario.status, 201);
+  assert.ok(convertedScenario.body.financialPlan.id);
+  assert.equal(convertedScenario.body.financialPlan.actualContributions, '0');
+  assert.equal((await request(`${scenariosPath}/${steadyScenario.body.id}/convert`, {}, login.cookie)).status, 409);
+  const goalsAfterConversion = await request(goalsPath, undefined, login.cookie);
+  const scenarioGoal = goalsAfterConversion.body.goals.find(item => item.id === convertedScenario.body.financialPlan.goalId);
+  assert.equal(scenarioGoal.targetAmount, convertedScenario.body.financialPlan.projectedTarget);
   const paydayPath = `spaces/${spaces.body[0].id}/payday-routines`;
   assert.equal((await request(paydayPath)).status, 401);
   const routineSalary = await request(incomePath, {
@@ -361,6 +422,8 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   const bobSpaces = await request('spaces', undefined, bob.cookie);
   assert.equal((await request(investmentsPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(analyticsPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(financialReviewsPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(scenariosPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/investment-accounts/${investmentAccount.body.id}/investments`, { type: 'STOCK', name: 'Private', costBasis: '1', startDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/savings-accounts/${savingsAccount.body.id}/transactions`, { type: 'DEPOSIT', amount: '1', transactionDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/liabilities/${liability.body.id}/payments`, { amount: '1', paidAt: receivedDate }, bob.cookie)).status, 404);

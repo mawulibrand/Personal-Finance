@@ -15,6 +15,8 @@ import { expectedPaydayDates, salaryPeriodStatus } from './income.js';
 import { nextRecurringDate } from './recurring.js';
 import { calculateFixedDepositValue, calculateInvestmentQuantity, validateInvestmentQuantityHistory } from './investment.js';
 import { calculatePortfolioAnalytics } from './portfolio-analytics.js';
+import { calculateScenarioProjection, type ContributionFrequency } from './scenario-planning.js';
+import { evaluateFinancialRules, isFinancialRuleMetric, type FinancialProfile } from './financial-insights.js';
 import { addDecimals, decimalToUnits, subtractDecimals, unitsToDecimal } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
@@ -117,6 +119,37 @@ const goalContributionInput = z.object({
   description: z.string().trim().max(240).optional().transform(value => value || undefined),
 }).strict();
 const snapshotInput = z.object({ snapshotDate: dateOnly.optional() }).strict();
+const financialReviewInput = z.object({ trigger: z.enum(['MONTHLY', 'ON_DEMAND']).default('ON_DEMAND') }).strict();
+const strategyResponseInput = z.object({
+  decision: z.enum(['SELECTED', 'MODIFIED', 'REJECTED']).optional(),
+  feedback: z.enum(['HELPFUL', 'NOT_HELPFUL', 'NOT_APPLICABLE']).optional(),
+  userNote: z.string().trim().max(500).optional(),
+}).strict().superRefine((input, context) => {
+  if (!input.decision && !input.feedback) context.addIssue({ code: 'custom', message: 'Choose a decision or provide feedback.' });
+  if (input.decision === 'MODIFIED' && !input.userNote) context.addIssue({ code: 'custom', path: ['userNote'], message: 'Describe your modified strategy.' });
+});
+const scenarioRate = z.string().regex(/^-?(?:0|[1-9]\d{0,2})(?:\.\d{1,4})?$/);
+const scenarioInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  startingCapital: nonNegativeAmount,
+  recurringContribution: amount,
+  contributionFrequency: z.enum(['WEEKLY', 'BIWEEKLY', 'MONTHLY', 'YEARLY']),
+  expectedAnnualReturn: scenarioRate,
+  durationYears: z.number().int().min(1).max(50),
+  inflationRate: scenarioRate.default('0'),
+  annualContributionGrowth: scenarioRate.default('0'),
+}).strict().superRefine((input, context) => {
+  if (Number(input.expectedAnnualReturn) < -100 || Number(input.expectedAnnualReturn) > 100) {
+    context.addIssue({ code: 'custom', path: ['expectedAnnualReturn'], message: 'Expected annual return must be between -100% and 100%.' });
+  }
+  if (Number(input.inflationRate) < 0 || Number(input.inflationRate) > 100) {
+    context.addIssue({ code: 'custom', path: ['inflationRate'], message: 'Inflation must be between 0% and 100%.' });
+  }
+  if (Number(input.annualContributionGrowth) < -100 || Number(input.annualContributionGrowth) > 100) {
+    context.addIssue({ code: 'custom', path: ['annualContributionGrowth'], message: 'Contribution growth must be between -100% and 100%.' });
+  }
+});
 const paydayRoutineActionInput = z.object({
   sourceId: z.string().uuid(),
   type: z.enum(['SAVINGS_DEPOSIT', 'GOAL_CONTRIBUTION', 'LIABILITY_PAYMENT']),
@@ -318,6 +351,80 @@ async function queueEmail(tx: Prisma.TransactionClient, recipient: string, purpo
   const path = purpose === 'VERIFY_EMAIL' ? 'verify' : 'reset';
   await tx.emailOutbox.create({ data: { recipient, subject: purpose === 'VERIFY_EMAIL' ? 'Verify your email' : 'Reset your password', body: `Open this link within one hour: ${origin}/${path}#token=${token}` } });
 }
+
+type ScenarioRecord = Prisma.ScenarioGetPayload<{
+  include: { financialPlan: { include: { goal: { include: { contributions: true } } } } };
+}>;
+function scenarioResponse(scenario: ScenarioRecord) {
+  const projection = calculateScenarioProjection({
+    startingCapital: Number(scenario.startingCapital),
+    recurringContribution: Number(scenario.recurringContribution),
+    contributionFrequency: scenario.contributionFrequency as ContributionFrequency,
+    expectedAnnualReturn: Number(scenario.expectedAnnualReturn),
+    durationYears: scenario.durationYears,
+    inflationRate: Number(scenario.inflationRate),
+    annualContributionGrowth: Number(scenario.annualContributionGrowth),
+  });
+  const plan = scenario.financialPlan;
+  return {
+    id: scenario.id,
+    name: scenario.name,
+    currencyCode: scenario.currencyCode.trim(),
+    startingCapital: scenario.startingCapital.toString(),
+    recurringContribution: scenario.recurringContribution.toString(),
+    contributionFrequency: scenario.contributionFrequency,
+    expectedAnnualReturn: scenario.expectedAnnualReturn.toString(),
+    durationYears: scenario.durationYears,
+    inflationRate: scenario.inflationRate.toString(),
+    annualContributionGrowth: scenario.annualContributionGrowth.toString(),
+    createdAt: scenario.createdAt.toISOString(),
+    projection,
+    financialPlan: plan ? {
+      id: plan.id,
+      goalId: plan.goalId,
+      projectedTarget: plan.projectedTarget.toString(),
+      actualContributions: subtractDecimals(
+        addDecimals(...plan.goal.contributions.filter(contribution => contribution.type === 'CONTRIBUTION').map(contribution => contribution.amount.toString())),
+        addDecimals(...plan.goal.contributions.filter(contribution => contribution.type === 'WITHDRAWAL').map(contribution => contribution.amount.toString())),
+      ),
+    } : null,
+  };
+}
+
+function addYearsToDate(date: Date, years: number) {
+  const year = date.getUTCFullYear() + years;
+  const month = date.getUTCMonth();
+  const dayOfMonth = Math.min(date.getUTCDate(), new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
+  return new Date(Date.UTC(year, month, dayOfMonth));
+}
+
+type FinancialReviewRecord = Prisma.FinancialProfileSnapshotGetPayload<{ include: { strategies: true } }>;
+function financialReviewResponse(snapshot: FinancialReviewRecord) {
+  return {
+    id: snapshot.id,
+    trigger: snapshot.trigger,
+    monthlyPeriod: snapshot.monthlyPeriod,
+    currencyCode: snapshot.currencyCode.trim(),
+    periodStart: toDateOnly(snapshot.periodStart),
+    periodEnd: toDateOnly(snapshot.periodEnd),
+    createdAt: snapshot.createdAt.toISOString(),
+    profile: snapshot.profile,
+    strategies: snapshot.strategies.map(strategy => ({
+      id: strategy.id,
+      code: strategy.ruleCode,
+      severity: strategy.severity,
+      title: strategy.title,
+      explanation: strategy.explanation,
+      observedValue: strategy.observedValue.toString(),
+      threshold: strategy.threshold.toString(),
+      decision: strategy.decision,
+      feedback: strategy.feedback,
+      userNote: strategy.userNote,
+      respondedAt: strategy.respondedAt?.toISOString() ?? null,
+    })),
+  };
+}
+
 @Injectable()
 class Identity {
   async user(req: Request) {
@@ -492,6 +599,317 @@ class Api {
         method: valuation.method,
       })),
     })), asOfDate);
+  }
+  private async buildFinancialProfile(membership: { spaceId: string; space: { baseCurrency: string } }) {
+    const now = new Date();
+    const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1));
+    const today = new Date(`${toDateOnly(now)}T00:00:00.000Z`);
+    const currencyCode = membership.space.baseCurrency.trim();
+    const [incomeRecords, expenseRecords, savingsAccounts, netWorth] = await Promise.all([
+      db.incomeRecord.findMany({
+        where: { source: { spaceId: membership.spaceId }, receivedDate: { gte: periodStart, lt: periodEnd } },
+        include: { source: { select: { currencyCode: true } } },
+        orderBy: { receivedDate: 'desc' },
+      }),
+      db.expenseRecord.findMany({
+        where: { spaceId: membership.spaceId, spentAt: { gte: periodStart, lt: periodEnd } },
+        orderBy: { spentAt: 'desc' },
+      }),
+      db.savingsAccount.findMany({
+        where: { spaceId: membership.spaceId, currencyCode },
+        include: { transactions: { where: { transactionDate: { lte: today } } } },
+      }),
+      calculateNetWorth(membership.spaceId, today, currencyCode),
+    ]);
+    const baseCurrencyIncome = incomeRecords.filter(record => record.source.currencyCode.trim() === currencyCode);
+    const baseCurrencyExpenses = expenseRecords.filter(record => record.currencyCode.trim() === currencyCode);
+    const incomeTotal = baseCurrencyIncome.length ? addDecimals(...baseCurrencyIncome.map(record => record.amount.toString())) : null;
+    const expenseTotal = baseCurrencyExpenses.length ? addDecimals(...baseCurrencyExpenses.map(record => record.amount.toString())) : null;
+    const monthlyIncome = incomeTotal === null ? null : Number((Number(incomeTotal) / 3).toFixed(4));
+    const monthlyExpenses = expenseTotal === null ? null : Number((Number(expenseTotal) / 3).toFixed(4));
+    const monthlyCashFlow = monthlyIncome === null || monthlyExpenses === null
+      ? null
+      : Number(subtractDecimals(monthlyIncome.toFixed(4), monthlyExpenses.toFixed(4)));
+    const savingsRatePercent = monthlyIncome === null || monthlyExpenses === null || monthlyIncome <= 0
+      ? null
+      : Number((((monthlyIncome - monthlyExpenses) / monthlyIncome) * 100).toFixed(4));
+    const savingsBalance = savingsAccounts.length
+      ? Number(addDecimals(...savingsAccounts.map(account => subtractDecimals(
+        addDecimals(account.openingBalance.toString(), ...account.transactions.filter(item => item.type === 'DEPOSIT').map(item => item.amount.toString())),
+        addDecimals(...account.transactions.filter(item => item.type === 'WITHDRAWAL').map(item => item.amount.toString())),
+      ))))
+      : null;
+    const emergencyFundMonths = savingsBalance === null || monthlyExpenses === null || monthlyExpenses <= 0
+      ? null
+      : Number((savingsBalance / monthlyExpenses).toFixed(4));
+    const latestRecord = [...baseCurrencyIncome.map(record => record.receivedDate), ...baseCurrencyExpenses.map(record => record.spentAt)]
+      .sort((left, right) => right.getTime() - left.getTime())[0];
+    const staleDays = latestRecord ? (today.getTime() - latestRecord.getTime()) / 86400000 : Number.POSITIVE_INFINITY;
+    const limitations = [
+      'Income and expenses use the previous three complete calendar months and only the financial space base currency.',
+      'Tracked savings may be earmarked for other goals and are not necessarily an available emergency reserve.',
+      'Net worth excludes untracked assets and liabilities; no currency conversion is performed.',
+      'No risk profile, personal circumstances, or investment recommendation is inferred.',
+    ];
+    if (baseCurrencyIncome.length !== incomeRecords.length || baseCurrencyExpenses.length !== expenseRecords.length) {
+      limitations.push('Records in other currencies were excluded rather than converted.');
+    }
+    const profile: FinancialProfile = {
+      currencyCode,
+      periodStart: toDateOnly(periodStart),
+      periodEnd: toDateOnly(periodEnd),
+      monthlyIncome,
+      monthlyExpenses,
+      savingsRatePercent,
+      monthlyCashFlow,
+      savingsBalance,
+      emergencyFundMonths,
+      netWorthByCurrency: netWorth.map(item => ({ currencyCode: item.currencyCode, netWorth: Number(item.netWorth) })),
+      dataFreshness: staleDays > 60 ? 'UPDATE_RECOMMENDED' : 'UP_TO_DATE',
+      limitations,
+    };
+    const rules = await db.financialRule.findMany({
+      where: { enabled: true, market: { in: ['*', currencyCode] } },
+    });
+    const strategies = evaluateFinancialRules(profile, rules.flatMap(rule => isFinancialRuleMetric(rule.metric)
+      ? [{
+        code: rule.code,
+        metric: rule.metric,
+        operator: rule.operator,
+        threshold: Number(rule.threshold),
+        severity: rule.severity,
+        enabled: rule.enabled,
+      }]
+      : []));
+    return { profile, strategies, periodStart, periodEnd };
+  }
+  @Get('spaces/:id/financial-reviews') async financialReviews(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const reviews = await db.financialProfileSnapshot.findMany({
+      where: { spaceId: membership.spaceId },
+      include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+      orderBy: { createdAt: 'desc' },
+      take: 12,
+    });
+    return reviews.map(financialReviewResponse);
+  }
+  @Post('spaces/:id/financial-reviews') async createFinancialReview(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to generate financial reviews in this space.');
+    const { trigger } = validate(financialReviewInput, body);
+    const monthlyPeriod = trigger === 'MONTHLY'
+      ? `${new Date().getUTCFullYear()}-${String(new Date().getUTCMonth() + 1).padStart(2, '0')}`
+      : null;
+    if (monthlyPeriod) {
+      const existing = await db.financialProfileSnapshot.findUnique({
+        where: { spaceId_monthlyPeriod: { spaceId: membership.spaceId, monthlyPeriod } },
+        include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+      });
+      if (existing) return financialReviewResponse(existing);
+    }
+    const { profile, strategies, periodStart, periodEnd } = await this.buildFinancialProfile(membership);
+    try {
+      const review = await db.$transaction(async tx => {
+        const snapshot = await tx.financialProfileSnapshot.create({
+          data: {
+            spaceId: membership.spaceId,
+            createdBy: user.id,
+            trigger,
+            monthlyPeriod,
+            currencyCode: profile.currencyCode,
+            periodStart,
+            periodEnd,
+            profile,
+          },
+        });
+        if (strategies.length) {
+          await tx.recommendationStrategy.createMany({
+            data: strategies.map(strategy => ({
+              snapshotId: snapshot.id,
+              ruleCode: strategy.code,
+              severity: strategy.severity,
+              title: strategy.title,
+              explanation: strategy.explanation,
+              observedValue: strategy.observedValue,
+              threshold: strategy.threshold,
+            })),
+          });
+        }
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: trigger === 'MONTHLY' ? 'MONTHLY_FINANCIAL_REVIEW_CREATED' : 'FINANCIAL_REVIEW_CREATED' } });
+        return tx.financialProfileSnapshot.findUniqueOrThrow({
+          where: { id: snapshot.id },
+          include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+        });
+      });
+      return financialReviewResponse(review);
+    } catch (error) {
+      if (monthlyPeriod && error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const existing = await db.financialProfileSnapshot.findUniqueOrThrow({
+          where: { spaceId_monthlyPeriod: { spaceId: membership.spaceId, monthlyPeriod } },
+          include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+        });
+        return financialReviewResponse(existing);
+      }
+      throw error;
+    }
+  }
+  @Post('spaces/:id/financial-reviews/:reviewId/strategies/:strategyId/response') async respondToStrategy(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('reviewId') reviewId: string,
+    @Param('strategyId') strategyId: string,
+    @Body() body: unknown,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to respond to financial strategies in this space.');
+    const input = validate(strategyResponseInput, body);
+    const validReviewId = validate(z.string().uuid(), reviewId);
+    const validStrategyId = validate(z.string().uuid(), strategyId);
+    const strategy = await db.recommendationStrategy.findFirst({
+      where: { id: validStrategyId, snapshotId: validReviewId, snapshot: { spaceId: membership.spaceId } },
+    });
+    if (!strategy) throw new NotFoundException();
+    const updated = await db.$transaction(async tx => {
+      const result = await tx.recommendationStrategy.update({
+        where: { id: strategy.id },
+        data: {
+          decision: input.decision,
+          feedback: input.feedback,
+          userNote: input.userNote,
+          respondedBy: user.id,
+          respondedAt: new Date(),
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'FINANCIAL_STRATEGY_RESPONSE_RECORDED' } });
+      return result;
+    });
+    return {
+      id: updated.id,
+      decision: updated.decision,
+      feedback: updated.feedback,
+      userNote: updated.userNote,
+      respondedAt: updated.respondedAt?.toISOString() ?? null,
+    };
+  }
+  @Get('spaces/:id/scenarios') async scenarios(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const scenarios = await db.scenario.findMany({
+      where: { spaceId: membership.spaceId },
+      include: { financialPlan: { include: { goal: { include: { contributions: true } } } } },
+      orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+    });
+    return scenarios.map(scenarioResponse);
+  }
+  @Post('spaces/:id/scenarios') async createScenario(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to create scenarios in this space.');
+    const input = validate(scenarioInput, body);
+    const assumptions = {
+      startingCapital: Number(input.startingCapital),
+      recurringContribution: Number(input.recurringContribution),
+      contributionFrequency: input.contributionFrequency,
+      expectedAnnualReturn: Number(input.expectedAnnualReturn),
+      durationYears: input.durationYears,
+      inflationRate: Number(input.inflationRate),
+      annualContributionGrowth: Number(input.annualContributionGrowth),
+    };
+    try { calculateScenarioProjection(assumptions); }
+    catch (error) {
+      if (error instanceof RangeError) throw new BadRequestException(error.message);
+      throw error;
+    }
+    const scenario = await db.$transaction(async tx => {
+      const created = await tx.scenario.create({
+        data: {
+          ...input,
+          currencyCode: input.currencyCode ?? membership.space.baseCurrency.trim(),
+          spaceId: membership.spaceId,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'SCENARIO_CREATED' } });
+      return tx.scenario.findUniqueOrThrow({
+        where: { id: created.id },
+        include: { financialPlan: { include: { goal: { include: { contributions: true } } } } },
+      });
+    });
+    return scenarioResponse(scenario);
+  }
+  @Post('spaces/:id/scenarios/:scenarioId/convert') async convertScenarioToPlan(@Req() req: Request, @Param('id') id: string, @Param('scenarioId') scenarioId: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to create a plan in this space.');
+    const validScenarioId = validate(z.string().uuid(), scenarioId);
+    const scenario = await db.scenario.findFirst({
+      where: { id: validScenarioId, spaceId: membership.spaceId },
+      include: { financialPlan: { include: { goal: { include: { contributions: true } } } } },
+    });
+    if (!scenario) throw new NotFoundException();
+    if (scenario.financialPlan) throw new ConflictException('This scenario has already been converted to a plan.');
+    const projection = calculateScenarioProjection({
+      startingCapital: Number(scenario.startingCapital),
+      recurringContribution: Number(scenario.recurringContribution),
+      contributionFrequency: scenario.contributionFrequency as ContributionFrequency,
+      expectedAnnualReturn: Number(scenario.expectedAnnualReturn),
+      durationYears: scenario.durationYears,
+      inflationRate: Number(scenario.inflationRate),
+      annualContributionGrowth: Number(scenario.annualContributionGrowth),
+    });
+    const finalProjection = projection.at(-1);
+    if (!finalProjection || finalProjection.nominalValue <= 0 || finalProjection.nominalValue > 999_999_999_999_999) {
+      throw new BadRequestException('The projected target is outside the supported goal amount range.');
+    }
+    const targetDate = addYearsToDate(new Date(`${toDateOnly(new Date())}T00:00:00.000Z`), scenario.durationYears);
+    try {
+      await db.$transaction(async tx => {
+        const goal = await tx.financialGoal.create({
+          data: {
+            spaceId: membership.spaceId,
+            name: scenario.name,
+            description: 'Scenario projection target; actual results may differ and investment returns are not guaranteed.',
+            currencyCode: scenario.currencyCode,
+            targetAmount: finalProjection.nominalValue.toFixed(4),
+            targetDate,
+            createdBy: user.id,
+          },
+        });
+        await tx.financialPlan.create({
+          data: {
+            spaceId: membership.spaceId,
+            scenarioId: scenario.id,
+            goalId: goal.id,
+            name: scenario.name,
+            currencyCode: scenario.currencyCode,
+            startingCapital: scenario.startingCapital,
+            recurringContribution: scenario.recurringContribution,
+            contributionFrequency: scenario.contributionFrequency,
+            expectedAnnualReturn: scenario.expectedAnnualReturn,
+            durationYears: scenario.durationYears,
+            inflationRate: scenario.inflationRate,
+            annualContributionGrowth: scenario.annualContributionGrowth,
+            projectedTarget: finalProjection.nominalValue.toFixed(4),
+            createdBy: user.id,
+          },
+        });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'SCENARIO_CONVERTED_TO_PLAN' } });
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('This scenario has already been converted to a plan.');
+      }
+      throw error;
+    }
+    const converted = await db.scenario.findUniqueOrThrow({
+      where: { id: scenario.id },
+      include: { financialPlan: { include: { goal: { include: { contributions: true } } } } },
+    });
+    return scenarioResponse(converted);
   }
   @Post('spaces/:id/net-worth/snapshots') async createNetWorthSnapshot(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
     const user = await this.identity.user(req);

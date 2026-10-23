@@ -1,0 +1,213 @@
+.page {
+  padding-top: 48px !important;
+}
+
+.page h1 {
+  margin: 14px 0;
+  font-family: Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.actions button {
+  width: auto;
+}
+
+.reviewSelector {
+  display: grid;
+  max-width: 360px;
+  gap: 7px;
+  margin: 20px 0;
+}
+
+.reviewSelector select,
+.responseForm textarea {
+  width: 100%;
+  padding: 11px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.panel {
+  padding: 24px;
+  margin: 20px 0;
+  border: 1px solid #dce1d7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.panel h2 {
+  margin: 0 0 14px;
+}
+
+.panel h3 {
+  margin: 22px 0 10px;
+}
+
+.heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.heading .eyebrow {
+  margin: 0 0 7px;
+}
+
+.heading h2,
+.heading h3 {
+  margin: 0;
+}
+
+.heading > strong {
+  color: #286548;
+  font-size: 13px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.metrics article {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 100px;
+  padding: 16px;
+  border: 1px solid #e2e7df;
+  border-radius: 9px;
+  background: #fbfcf9;
+}
+
+.metrics span {
+  color: #64746c;
+  font-size: 13px;
+}
+
+.metrics strong {
+  overflow-wrap: anywhere;
+}
+
+.netWorth {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.netWorth li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid #e9ede6;
+}
+
+.limitations {
+  margin-top: 20px;
+  color: #64746c;
+  font-size: 13px;
+}
+
+.limitations summary {
+  width: fit-content;
+  color: #245c48;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.limitations ul {
+  padding-left: 20px;
+  line-height: 1.55;
+}
+
+.strategies {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.strategy {
+  padding: 18px;
+  border: 1px solid #e2e7df;
+  border-radius: 9px;
+  background: #fbfcf9;
+}
+
+.strategy > p {
+  line-height: 1.55;
+}
+
+.strategy .fact {
+  color: #64746c;
+  font-size: 13px;
+}
+
+.note {
+  padding: 11px;
+  border-left: 3px solid #c9e38d;
+  background: #f1f5ed;
+}
+
+.responseForm {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.responseForm label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.responseForm textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.responseForm > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.responseForm button {
+  width: auto;
+  padding: 9px 13px;
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 32px !important;
+  }
+
+  .page h1 {
+    font-size: 38px;
+  }
+
+  .panel {
+    padding: 18px;
+  }
+
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .actions button {
+    width: 100%;
+  }
+}

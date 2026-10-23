@@ -114,6 +114,36 @@ enum InvestmentStatus {
   ACTIVE
   CLOSED
 }
+enum ScenarioContributionFrequency {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  YEARLY
+}
+enum FinancialRuleOperator {
+  LESS_THAN
+  GREATER_THAN
+}
+enum FinancialRuleSeverity {
+  HIGH
+  MEDIUM
+  LOW
+}
+enum FinancialReviewTrigger {
+  MONTHLY
+  ON_DEMAND
+}
+enum StrategyDecision {
+  PROPOSED
+  SELECTED
+  MODIFIED
+  REJECTED
+}
+enum RecommendationFeedback {
+  HELPFUL
+  NOT_HELPFUL
+  NOT_APPLICABLE
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -140,6 +170,10 @@ model User {
   investments Investment[]
   investmentTransactions InvestmentTransaction[]
   investmentValuations InvestmentValuation[]
+  scenarios Scenario[]
+  financialPlans FinancialPlan[]
+  financialReviews FinancialProfileSnapshot[]
+  strategyResponses RecommendationStrategy[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -163,6 +197,9 @@ model FinancialSpace {
   netWorthSnapshots NetWorthSnapshot[]
   paydayRoutineActions PaydayRoutineAction[]
   investmentAccounts InvestmentAccount[]
+  scenarios Scenario[]
+  financialPlans FinancialPlan[]
+  financialReviews FinancialProfileSnapshot[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -431,6 +468,7 @@ model FinancialGoal {
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   contributions GoalContribution[]
   paydayRoutineActions PaydayRoutineAction[]
+  financialPlan FinancialPlan?
   @@index([spaceId, createdAt])
 }
 model GoalContribution {
@@ -445,6 +483,101 @@ model GoalContribution {
   goal FinancialGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   @@index([goalId, contributionDate, createdAt])
+}
+model Scenario {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  currencyCode String @db.Char(3)
+  startingCapital Decimal @db.Decimal(19, 4)
+  recurringContribution Decimal @db.Decimal(19, 4)
+  contributionFrequency ScenarioContributionFrequency
+  expectedAnnualReturn Decimal @db.Decimal(7, 4)
+  durationYears Int
+  inflationRate Decimal @default(0) @db.Decimal(7, 4)
+  annualContributionGrowth Decimal @default(0) @db.Decimal(7, 4)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  financialPlan FinancialPlan?
+  @@index([spaceId, createdAt])
+}
+model FinancialPlan {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  scenarioId String @unique @db.Uuid
+  goalId String @unique @db.Uuid
+  name String
+  currencyCode String @db.Char(3)
+  startingCapital Decimal @db.Decimal(19, 4)
+  recurringContribution Decimal @db.Decimal(19, 4)
+  contributionFrequency ScenarioContributionFrequency
+  expectedAnnualReturn Decimal @db.Decimal(7, 4)
+  durationYears Int
+  inflationRate Decimal @db.Decimal(7, 4)
+  annualContributionGrowth Decimal @db.Decimal(7, 4)
+  projectedTarget Decimal @db.Decimal(19, 4)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  scenario Scenario @relation(fields: [scenarioId], references: [id], onDelete: Restrict)
+  goal FinancialGoal @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([spaceId, createdAt])
+}
+model FinancialRule {
+  id String @id @default(uuid()) @db.Uuid
+  code String
+  market String @default("*") @db.VarChar(3)
+  metric String
+  operator FinancialRuleOperator
+  threshold Decimal @db.Decimal(19, 4)
+  severity FinancialRuleSeverity
+  enabled Boolean @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  @@unique([code, market])
+  @@index([market, enabled])
+}
+model FinancialProfileSnapshot {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  createdBy String @db.Uuid
+  trigger FinancialReviewTrigger
+  monthlyPeriod String?
+  currencyCode String @db.Char(3)
+  periodStart DateTime @db.Date
+  periodEnd DateTime @db.Date
+  profile Json
+  createdAt DateTime @default(now()) @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  strategies RecommendationStrategy[]
+  @@unique([spaceId, monthlyPeriod])
+  @@index([spaceId, createdAt])
+}
+model RecommendationStrategy {
+  id String @id @default(uuid()) @db.Uuid
+  snapshotId String @db.Uuid
+  ruleCode String
+  severity FinancialRuleSeverity
+  title String
+  explanation String
+  observedValue Decimal @db.Decimal(19, 4)
+  threshold Decimal @db.Decimal(19, 4)
+  decision StrategyDecision @default(PROPOSED)
+  feedback RecommendationFeedback?
+  userNote String?
+  respondedBy String? @db.Uuid
+  respondedAt DateTime? @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  snapshot FinancialProfileSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  responder User? @relation(fields: [respondedBy], references: [id], onDelete: Restrict)
+  @@unique([snapshotId, ruleCode])
+  @@index([snapshotId, severity])
 }
 model NetWorthSnapshot {
   id String @id @default(uuid()) @db.Uuid

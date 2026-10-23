@@ -14,6 +14,8 @@ import goalStyles from './goals.module.css';
 import netWorthStyles from './net-worth.module.css';
 import paydayStyles from './payday.module.css';
 import investmentStyles from './investments.module.css';
+import scenarioStyles from './scenario-planning.module.css';
+import insightStyles from './financial-insights.module.css';
 export async function api(path: string, body?: unknown) {
   const response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   const result = await response.json().catch(() => ({ message: 'The service is unavailable. Please try again.' }));
@@ -78,6 +80,8 @@ const workspaceLinks = [
   { href: '/savings', label: 'Savings' },
   { href: '/investments', label: 'Investments' },
   { href: '/portfolio-intelligence', label: 'Portfolio intelligence' },
+  { href: '/scenarios', label: 'Scenario planning' },
+  { href: '/financial-review', label: 'Financial review' },
   { href: '/goals', label: 'Goals' },
   { href: '/net-worth', label: 'Net worth' },
   { href: '/payday', label: 'Payday routine' },
@@ -1436,6 +1440,7 @@ export function PortfolioIntelligence() {
     try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(value); }
     catch { return `${currency} ${value.toFixed(2)}`; }
   }
+
   const explanation = (key: string, metric: AnalyticsExplanation) => <details className={investmentStyles.explanation} key={key}>
     <summary>How is this calculated?</summary>
     <dl><dt>Formula</dt><dd>{metric.formula}</dd><dt>Data used</dt><dd>{metric.dataUsed.join(', ')}</dd><dt>Period</dt><dd>{metric.measurementPeriod}</dd><dt>Limitations</dt><dd>{metric.limitations.join(' ')}</dd><dt>Data freshness</dt><dd>{metric.dataFreshness}</dd></dl>
@@ -1468,6 +1473,292 @@ export function PortfolioIntelligence() {
           <section><h3>Historical comparison</h3>{portfolio.historicalComparison.status === 'READY' ? <p>{portfolio.historicalComparison.from} to {portfolio.historicalComparison.to}: {money(portfolio.historicalComparison.change!, portfolio.currencyCode)} ({portfolio.historicalComparison.percentage}%).</p> : <p className="muted">NOT_ENOUGH_DATA</p>}{explanation('historicalComparison', portfolio.explanations.historicalComparison)}</section>
         </div>
       </section>)}
+    </>}
+  </section></main>;
+}
+
+type ScenarioProjectionPoint = {
+  year: number;
+  nominalValue: number;
+  inflationAdjustedValue: number;
+  recurringContributions: number;
+};
+type SavedScenario = {
+  id: string;
+  name: string;
+  currencyCode: string;
+  startingCapital: string;
+  recurringContribution: string;
+  contributionFrequency: string;
+  expectedAnnualReturn: string;
+  durationYears: number;
+  projection: ScenarioProjectionPoint[];
+  financialPlan: { id: string; goalId: string; projectedTarget: string; actualContributions: string } | null;
+};
+type ScenarioSpace = { id: string; baseCurrency: string };
+const scenarioFrequencyLabels: Record<string, string> = {
+  WEEKLY: 'weekly',
+  BIWEEKLY: 'every two weeks',
+  MONTHLY: 'monthly',
+  YEARLY: 'yearly',
+};
+export function ScenarioPlanning() {
+  const [space, setSpace] = useState<ScenarioSpace | null>(null);
+  const [scenarios, setScenarios] = useState<SavedScenario[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  async function loadScenarios() {
+    const spaces = await api('spaces') as ScenarioSpace[];
+    if (!spaces[0]) throw new Error('No financial space is available.');
+    setSpace(spaces[0]);
+    setScenarios(await api(`spaces/${spaces[0].id}/scenarios`) as SavedScenario[]);
+  }
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces') as ScenarioSpace[];
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/scenarios`) as SavedScenario[];
+      if (active) { setSpace(spaces[0]); setScenarios(result); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load scenarios.'); }
+  })(); return () => { active = false; }; }, []);
+  function money(value: number | string, currency: string) {
+    const number = typeof value === 'number' ? value : Number(value);
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(number); }
+    catch { return `${currency} ${number.toFixed(2)}`; }
+  }
+  async function createScenario(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!space) return;
+    const formElement = event.currentTarget;
+    setBusy(true); setError(''); setMessage('');
+    const form = new FormData(formElement);
+    const payload = {
+      name: String(form.get('name')),
+      startingCapital: String(form.get('startingCapital')),
+      recurringContribution: String(form.get('recurringContribution')),
+      contributionFrequency: String(form.get('contributionFrequency')),
+      expectedAnnualReturn: String(form.get('expectedAnnualReturn')),
+      durationYears: Number(form.get('durationYears')),
+      inflationRate: String(form.get('inflationRate')),
+      annualContributionGrowth: String(form.get('annualContributionGrowth')),
+    };
+    try {
+      await api(`spaces/${space.id}/scenarios`, payload);
+      formElement.reset();
+      await loadScenarios();
+      setMessage('Scenario saved. Projections are estimates based on your assumptions, not guaranteed outcomes.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this scenario.'); }
+    finally { setBusy(false); }
+  }
+  async function convertScenario(scenario: SavedScenario) {
+    if (!space) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${space.id}/scenarios/${scenario.id}/convert`, {});
+      await loadScenarios();
+      setMessage(`${scenario.name} is now a goal-linked financial plan. Record actual goal contributions separately to track progress.`);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to convert this scenario.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="dashboard"><section className={`${scenarioStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PLANNING · WHAT-IF PROJECTIONS</p><h1>Scenario planning</h1>
+    <p className="muted">Explore alternatives using a starting amount, regular contributions, assumed return, duration, inflation and contribution growth. Projections are estimates, not promises; nothing is invested or transferred automatically.</p>
+    {error && <p className="error" role="alert">{error}</p>}
+    {message && <p className="notice" role="status">{message}</p>}
+    <section className={scenarioStyles.panel}>
+      <h2>Create a scenario</h2>
+      <form className={scenarioStyles.form} onSubmit={event => void createScenario(event)}>
+        <label>Scenario name<input name="name" required maxLength={100} placeholder="Steady monthly saving" /></label>
+        <label>Starting capital<input name="startingCapital" type="number" min="0" step="0.0001" defaultValue="0" required /></label>
+        <label>Recurring contribution<input name="recurringContribution" type="number" min="0.0001" step="0.0001" defaultValue="100" required /></label>
+        <label>Contribution frequency<select name="contributionFrequency" defaultValue="MONTHLY"><option value="WEEKLY">Weekly</option><option value="BIWEEKLY">Every two weeks</option><option value="MONTHLY">Monthly</option><option value="YEARLY">Yearly</option></select></label>
+        <label>Assumed annual return (%)<input name="expectedAnnualReturn" type="number" min="-100" max="100" step="0.0001" defaultValue="5" required /></label>
+        <label>Duration (years)<input name="durationYears" type="number" min="1" max="50" step="1" defaultValue="10" required /></label>
+        <label>Inflation (%)<input name="inflationRate" type="number" min="0" max="100" step="0.0001" defaultValue="2" required /></label>
+        <label>Annual contribution growth (%)<input name="annualContributionGrowth" type="number" min="-100" max="100" step="0.0001" defaultValue="0" required /></label>
+        <p className={scenarioStyles.hint}>Amounts use {space?.baseCurrency ?? 'your space currency'}. Payments are modeled at the end of each contribution interval. Return and inflation are annual percentage assumptions.</p>
+        <button type="submit" disabled={busy || !space}>{busy ? 'Working…' : 'Calculate and save scenario'}</button>
+      </form>
+    </section>
+    {scenarios.length > 0 && <section className={scenarioStyles.panel}>
+      <h2>Compare scenarios</h2>
+      <div className={scenarioStyles.tableWrap}><table className={scenarioStyles.comparison}>
+        <thead><tr><th>Scenario</th><th>Duration</th><th>Nominal projection</th><th>Inflation-adjusted</th><th>Regular contribution</th><th>Assumed return</th></tr></thead>
+        <tbody>{scenarios.map(scenario => {
+          const final = scenario.projection.at(-1);
+          return <tr key={scenario.id}><th scope="row">{scenario.name}</th><td>{scenario.durationYears} years</td><td>{final ? money(final.nominalValue, scenario.currencyCode) : '—'}</td><td>{final ? money(final.inflationAdjustedValue, scenario.currencyCode) : '—'}</td><td>{money(scenario.recurringContribution, scenario.currencyCode)} {scenarioFrequencyLabels[scenario.contributionFrequency]}</td><td>{scenario.expectedAnnualReturn}%</td></tr>;
+        })}</tbody>
+      </table></div>
+    </section>}
+    <div className={scenarioStyles.scenarios}>
+      {scenarios.map(scenario => <article className={scenarioStyles.scenario} key={scenario.id}>
+        <div className={scenarioStyles.heading}><div><p className="eyebrow">{scenario.currencyCode} · {scenario.durationYears} YEARS</p><h2>{scenario.name}</h2><p className="muted">{money(scenario.startingCapital, scenario.currencyCode)} starting capital · {money(scenario.recurringContribution, scenario.currencyCode)} {scenarioFrequencyLabels[scenario.contributionFrequency]} · {scenario.expectedAnnualReturn}% assumed annual return</p></div>
+          {scenario.financialPlan ? <strong>Plan created</strong> : <button type="button" disabled={busy} onClick={() => void convertScenario(scenario)}>Use this as my plan</button>}
+        </div>
+        {scenario.financialPlan && <p className={scenarioStyles.planStatus}>Goal-linked plan · projected target {money(scenario.financialPlan.projectedTarget, scenario.currencyCode)} · recorded goal contributions {money(scenario.financialPlan.actualContributions, scenario.currencyCode)}</p>}
+        <div className={scenarioStyles.tableWrap}><table className={scenarioStyles.projection}>
+          <thead><tr><th>Year</th><th>Nominal value</th><th>Today’s value after inflation</th><th>Recurring contributions</th></tr></thead>
+          <tbody>{scenario.projection.map(point => <tr key={point.year}><th scope="row">{point.year}</th><td>{money(point.nominalValue, scenario.currencyCode)}</td><td>{money(point.inflationAdjustedValue, scenario.currencyCode)}</td><td>{money(point.recurringContributions, scenario.currencyCode)}</td></tr>)}</tbody>
+        </table></div>
+        <p className={scenarioStyles.hint}>Expected returns are not guaranteed. Starting capital and assumed growth are not recorded as actual contributions. Currency is not converted.</p>
+      </article>)}
+    </div>
+  </section></main>;
+}
+
+type FinancialProfileView = {
+  currencyCode: string;
+  periodStart: string;
+  periodEnd: string;
+  monthlyIncome: number | null;
+  monthlyExpenses: number | null;
+  savingsRatePercent: number | null;
+  monthlyCashFlow: number | null;
+  savingsBalance: number | null;
+  emergencyFundMonths: number | null;
+  netWorthByCurrency: Array<{ currencyCode: string; netWorth: number }>;
+  dataFreshness: 'UP_TO_DATE' | 'UPDATE_RECOMMENDED';
+  limitations: string[];
+};
+type FinancialStrategyView = {
+  id: string;
+  code: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  title: string;
+  explanation: string;
+  observedValue: string;
+  threshold: string;
+  decision: 'PROPOSED' | 'SELECTED' | 'MODIFIED' | 'REJECTED';
+  feedback: 'HELPFUL' | 'NOT_HELPFUL' | 'NOT_APPLICABLE' | null;
+  userNote: string | null;
+  respondedAt: string | null;
+};
+type FinancialReviewView = {
+  id: string;
+  trigger: 'MONTHLY' | 'ON_DEMAND';
+  monthlyPeriod: string | null;
+  currencyCode: string;
+  periodStart: string;
+  periodEnd: string;
+  createdAt: string;
+  profile: FinancialProfileView;
+  strategies: FinancialStrategyView[];
+};
+type ReviewSpace = { id: string };
+export function FinancialReview() {
+  const [space, setSpace] = useState<ReviewSpace | null>(null);
+  const [reviews, setReviews] = useState<FinancialReviewView[]>([]);
+  const [selectedReviewId, setSelectedReviewId] = useState('');
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  async function loadReviews() {
+    const spaces = await api('spaces') as Array<ReviewSpace & { baseCurrency: string }>;
+    if (!spaces[0]) throw new Error('No financial space is available.');
+    setSpace(spaces[0]);
+    const result = await api(`spaces/${spaces[0].id}/financial-reviews`) as FinancialReviewView[];
+    setReviews(result);
+    if (!selectedReviewId && result[0]) setSelectedReviewId(result[0].id);
+  }
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces') as Array<ReviewSpace & { baseCurrency: string }>;
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/financial-reviews`) as FinancialReviewView[];
+      if (active) { setSpace(spaces[0]); setReviews(result); setSelectedReviewId(result[0]?.id ?? ''); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load financial reviews.'); }
+  })(); return () => { active = false; }; }, []);
+  const selectedReview = reviews.find(review => review.id === selectedReviewId) ?? reviews[0];
+  function money(value: number | null, currency: string) {
+    if (value === null) return 'Not enough recorded data';
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value); }
+    catch { return `${currency} ${value.toFixed(2)}`; }
+  }
+  async function generateReview(trigger: 'MONTHLY' | 'ON_DEMAND') {
+    if (!space) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await api(`spaces/${space.id}/financial-reviews`, { trigger }) as FinancialReviewView;
+      setReviews(current => [result, ...current.filter(review => review.id !== result.id)]);
+      setSelectedReviewId(result.id);
+      setMessage(trigger === 'MONTHLY' ? 'Monthly review is ready. Repeating this action will return the same review for this month.' : 'On-demand review is ready.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to generate this financial review.'); }
+    finally { setBusy(false); }
+  }
+  async function respond(
+    review: FinancialReviewView,
+    strategy: FinancialStrategyView,
+    response: { decision?: 'SELECTED' | 'MODIFIED' | 'REJECTED'; feedback?: 'HELPFUL' | 'NOT_HELPFUL' | 'NOT_APPLICABLE'; userNote?: string },
+  ) {
+    if (!space) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await api(`spaces/${space.id}/financial-reviews/${review.id}/strategies/${strategy.id}/response`, response) as Partial<FinancialStrategyView>;
+      setReviews(current => current.map(item => item.id === review.id
+        ? { ...item, strategies: item.strategies.map(candidate => candidate.id === strategy.id ? { ...candidate, ...result } : candidate) }
+        : item));
+      setMessage('Your response was recorded. It does not change financial records or calculations.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to record your response.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="dashboard"><section className={`${insightStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">FINANCIAL INTELLIGENCE · PRIVATE REVIEW</p><h1>Financial review</h1>
+    <p className="muted">Reviews are generated locally from summarized, validated records using transparent rules. No financial records are sent to an AI provider. This is informational, not personalized investment, tax, or legal advice.</p>
+    {error && <p className="error" role="alert">{error}</p>}
+    {message && <p className="notice" role="status">{message}</p>}
+    <div className={insightStyles.actions}>
+      <button type="button" disabled={busy || !space} onClick={() => void generateReview('ON_DEMAND')}>Generate on-demand review</button>
+      <button type="button" disabled={busy || !space} onClick={() => void generateReview('MONTHLY')}>Generate this month’s review</button>
+    </div>
+    {reviews.length > 0 && <label className={insightStyles.reviewSelector}>Past reviews
+      <select value={selectedReview?.id ?? ''} onChange={event => setSelectedReviewId(event.target.value)}>
+        {reviews.map(review => <option key={review.id} value={review.id}>{review.trigger === 'MONTHLY' ? `Monthly · ${review.monthlyPeriod}` : `On demand · ${new Date(review.createdAt).toLocaleDateString()}`}</option>)}
+      </select>
+    </label>}
+    {!selectedReview ? <section className={insightStyles.panel}><h2>No review generated yet</h2><p className="muted">Generate an on-demand review to see what can be summarized from your recent records.</p></section> : <>
+      <section className={insightStyles.panel}>
+        <div className={insightStyles.heading}><div><p className="eyebrow">{selectedReview.currencyCode} · {selectedReview.periodStart} TO {selectedReview.periodEnd}</p><h2>Profile summary</h2></div><strong>{selectedReview.profile.dataFreshness.replaceAll('_', ' ')}</strong></div>
+        <div className={insightStyles.metrics}>
+          <article><span>Average monthly income</span><strong>{money(selectedReview.profile.monthlyIncome, selectedReview.currencyCode)}</strong></article>
+          <article><span>Average monthly expenses</span><strong>{money(selectedReview.profile.monthlyExpenses, selectedReview.currencyCode)}</strong></article>
+          <article><span>Monthly savings rate</span><strong>{selectedReview.profile.savingsRatePercent === null ? 'Not enough recorded data' : `${selectedReview.profile.savingsRatePercent}%`}</strong></article>
+          <article><span>Average monthly cash flow</span><strong>{money(selectedReview.profile.monthlyCashFlow, selectedReview.currencyCode)}</strong></article>
+          <article><span>Tracked savings balance</span><strong>{money(selectedReview.profile.savingsBalance, selectedReview.currencyCode)}</strong></article>
+          <article><span>Emergency-fund coverage estimate</span><strong>{selectedReview.profile.emergencyFundMonths === null ? 'Not enough recorded data' : `${selectedReview.profile.emergencyFundMonths} months`}</strong></article>
+        </div>
+        <h3>Tracked net worth by currency</h3>
+        {selectedReview.profile.netWorthByCurrency.length
+          ? <ul className={insightStyles.netWorth}>{selectedReview.profile.netWorthByCurrency.map(item => <li key={item.currencyCode}>{item.currencyCode}<strong>{money(item.netWorth, item.currencyCode)}</strong></li>)}</ul>
+          : <p className="muted">No tracked net-worth records.</p>}
+        <details className={insightStyles.limitations}><summary>Data scope and limitations</summary><ul>{selectedReview.profile.limitations.map(limitation => <li key={limitation}>{limitation}</li>)}</ul></details>
+      </section>
+      <section className={insightStyles.panel}>
+        <h2>Possible strategies</h2>
+        <p className="muted">Strategies are generated by deterministic rules from this snapshot, not by an AI model. Review the source fact before acting.</p>
+        {!selectedReview.strategies.length ? <p>No configured rules were triggered, or there is not enough data to evaluate them.</p> : <div className={insightStyles.strategies}>
+          {selectedReview.strategies.map(strategy => <article className={insightStyles.strategy} key={strategy.id}>
+            <div className={insightStyles.heading}><div><p className="eyebrow">{strategy.severity} · {strategy.code.replaceAll('_', ' ')}</p><h3>{strategy.title}</h3></div><strong>{strategy.decision.replaceAll('_', ' ')}</strong></div>
+            <p>{strategy.explanation}</p>
+            <p className={insightStyles.fact}>Observed value: {strategy.observedValue} · Rule threshold: {strategy.threshold}</p>
+            {strategy.userNote && <p className={insightStyles.note}>Your modified strategy: {strategy.userNote}</p>}
+            <div className={insightStyles.responseForm}>
+              <label>Modification note (required when modifying)<textarea value={notes[strategy.id] ?? ''} maxLength={500} onChange={event => setNotes(current => ({ ...current, [strategy.id]: event.target.value }))} /></label>
+              <div>
+                <button type="button" disabled={busy} onClick={() => void respond(selectedReview, strategy, { decision: 'SELECTED' })}>Select</button>
+                <button type="button" disabled={busy || !notes[strategy.id]?.trim()} onClick={() => void respond(selectedReview, strategy, { decision: 'MODIFIED', userNote: notes[strategy.id]?.trim() })}>Modify</button>
+                <button type="button" disabled={busy} onClick={() => void respond(selectedReview, strategy, { decision: 'REJECTED' })}>Reject</button>
+              </div>
+              <div>
+                <button type="button" disabled={busy} onClick={() => void respond(selectedReview, strategy, { feedback: 'HELPFUL' })}>Helpful</button>
+                <button type="button" disabled={busy} onClick={() => void respond(selectedReview, strategy, { feedback: 'NOT_HELPFUL' })}>Not helpful</button>
+                <button type="button" disabled={busy} onClick={() => void respond(selectedReview, strategy, { feedback: 'NOT_APPLICABLE' })}>Not applicable</button>
+              </div>
+            </div>
+          </article>)}
+        </div>}
+      </section>
     </>}
   </section></main>;
 }
