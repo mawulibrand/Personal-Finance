@@ -39,8 +39,12 @@
 }
 
 .nav {
+  flex: 1;
   display: grid;
+  min-height: 0;
   gap: 5px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .nav a,
@@ -81,7 +85,11 @@
 }
 
 .content {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   margin-left: 252px;
   padding: 1px 34px;
 }
@@ -270,6 +278,8 @@
   }
 
   .content {
+    height: calc(100vh - 66px);
+    height: calc(100dvh - 66px);
     margin-left: 0;
     padding: 1px 0;
   }

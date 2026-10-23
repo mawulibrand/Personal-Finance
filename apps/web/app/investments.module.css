@@ -146,6 +146,119 @@
   font-size: 20px;
 }
 
+.analyticsHeading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.analyticsHeading h2 {
+  margin: 0;
+}
+
+.analyticsHeading p {
+  margin: 7px 0;
+}
+
+.analyticsHeading > strong {
+  font-size: 26px;
+  white-space: nowrap;
+}
+
+.analyticsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.analyticsGrid > article,
+.analyticsSections > section {
+  padding: 17px;
+  border: 1px solid #e2e7df;
+  border-radius: 9px;
+  background: #fbfcf9;
+}
+
+.analyticsGrid > article {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.analyticsGrid > article > span {
+  color: #64746c;
+  font-size: 13px;
+}
+
+.analyticsGrid > article > strong {
+  overflow-wrap: anywhere;
+  font-size: 21px;
+}
+
+.analyticsSections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.analyticsSections > section h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.analyticsList {
+  padding: 0;
+  margin: 12px 0;
+  list-style: none;
+}
+
+.analyticsList li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #e9ede6;
+  font-size: 13px;
+}
+
+.analyticsList li strong {
+  text-align: right;
+}
+
+.explanation {
+  margin-top: 8px;
+  color: #64746c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.explanation summary {
+  width: fit-content;
+  color: #245c48;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.explanation dl {
+  display: grid;
+  grid-template-columns: minmax(80px, 100px) 1fr;
+  gap: 6px 10px;
+  margin: 10px 0 0;
+}
+
+.explanation dt {
+  color: #18332b;
+  font-weight: 700;
+}
+
+.explanation dd {
+  margin: 0;
+}
+
 .forms {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -250,6 +363,19 @@
   .form,
   .forms {
     grid-template-columns: 1fr;
+  }
+
+  .analyticsGrid,
+  .analyticsSections {
+    grid-template-columns: 1fr;
+  }
+
+  .analyticsHeading {
+    flex-direction: column;
+  }
+
+  .analyticsHeading > strong {
+    font-size: 22px;
   }
 
   .form button,

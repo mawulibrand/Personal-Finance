@@ -77,6 +77,7 @@ const workspaceLinks = [
   { href: '/expenses', label: 'Expenses' },
   { href: '/savings', label: 'Savings' },
   { href: '/investments', label: 'Investments' },
+  { href: '/portfolio-intelligence', label: 'Portfolio intelligence' },
   { href: '/goals', label: 'Goals' },
   { href: '/net-worth', label: 'Net worth' },
   { href: '/payday', label: 'Payday routine' },
@@ -1374,5 +1375,99 @@ export function Investments() {
         })}</div>}
       </article>)}</div>}
     </section>
+  </section></main>;
+}
+
+type AnalyticsExplanation = {
+  formula: string;
+  dataUsed: string[];
+  measurementPeriod: string;
+  limitations: string[];
+  dataFreshness: string;
+};
+type PortfolioAnalyticsCurrency = {
+  currencyCode: string;
+  status: 'READY' | 'NOT_ENOUGH_DATA';
+  asOfDate: string;
+  holdingCount: number;
+  valuedHoldingCount: number;
+  totalValue: number;
+  absoluteReturn: number | null;
+  returnPercent: number | null;
+  annualizedReturn: number | null;
+  xirr: { status: string; value: number | null };
+  twr: { status: string; value: number | null; periods: { from: string; to: string; returnPercent: number }[] };
+  allocation: { type: string; value: number; percentage: number | null }[];
+  concentration: { investmentId: string; name: string; type: string; value: number; percentage: number | null }[];
+  diversification: { status: string; hhi: number | null; effectiveHoldingCount: number | null };
+  volatility: { status: string; annualizedPercent: number | null; periodCount: number };
+  contributions: { invested: number; proceeds: number; investmentIncome: number; feesAndTaxes: number; netGain: number };
+  metricStatus: Record<string, 'READY' | 'NOT_ENOUGH_DATA'>;
+  maturityExposure: { bucket: string; value: number; percentage: number | null }[];
+  historicalComparison: { status: string; from: string | null; to: string | null; change: number | null; percentage: number | null };
+  explanations: Record<string, AnalyticsExplanation>;
+};
+type PortfolioAnalyticsOverview = { asOfDate: string; status: 'READY' | 'NOT_ENOUGH_DATA'; currencies: PortfolioAnalyticsCurrency[] };
+const metricLabels: Record<string, string> = {
+  absoluteReturn: 'Absolute return',
+  returnPercent: 'Return on contributions',
+  xirr: 'Annualized return (XIRR)',
+  twr: 'Time-weighted return',
+  allocation: 'Asset allocation',
+  concentration: 'Concentration',
+  diversification: 'Diversification',
+  volatility: 'Annualized volatility',
+  contributionAnalysis: 'Contribution analysis',
+  maturityExposure: 'Fixed-deposit maturity exposure',
+  historicalComparison: 'Historical comparison',
+};
+export function PortfolioIntelligence() {
+  const [data, setData] = useState<PortfolioAnalyticsOverview | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/portfolio-analytics`);
+      if (active) setData(result);
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load portfolio analytics.'); }
+  })(); return () => { active = false; }; }, []);
+  function money(value: number, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(value); }
+    catch { return `${currency} ${value.toFixed(2)}`; }
+  }
+  const explanation = (key: string, metric: AnalyticsExplanation) => <details className={investmentStyles.explanation} key={key}>
+    <summary>How is this calculated?</summary>
+    <dl><dt>Formula</dt><dd>{metric.formula}</dd><dt>Data used</dt><dd>{metric.dataUsed.join(', ')}</dd><dt>Period</dt><dd>{metric.measurementPeriod}</dd><dt>Limitations</dt><dd>{metric.limitations.join(' ')}</dd><dt>Data freshness</dt><dd>{metric.dataFreshness}</dd></dl>
+  </details>;
+  return <main className="dashboard"><section className={`${investmentStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PORTFOLIO · DETERMINISTIC ANALYTICS</p><h1>Portfolio intelligence</h1>
+    <p className="muted">Returns, exposure, and portfolio structure calculated from your dated investment records and valuations. Results remain separated by currency; no market feed or FX conversion is used.</p>
+    {error && <p className="error" role="alert">{error}</p>}
+    {!data ? <p role="status">Calculating portfolio analytics…</p> : data.status === 'NOT_ENOUGH_DATA' ? <section className={investmentStyles.panel}><h2>Not enough data yet</h2><p className="muted">Add an investment and record transactions or a dated valuation to begin. Metrics that cannot be calculated are explicitly marked NOT_ENOUGH_DATA.</p></section> : <>
+      {data.currencies.map(portfolio => <section className={investmentStyles.panel} key={portfolio.currencyCode}>
+        <div className={investmentStyles.analyticsHeading}><div><p className="eyebrow">{portfolio.currencyCode} PORTFOLIO · AS OF {portfolio.asOfDate}</p><h2>Portfolio summary</h2><p className="muted">{portfolio.valuedHoldingCount} of {portfolio.holdingCount} holdings currently valued.</p></div><strong>{money(portfolio.totalValue, portfolio.currencyCode)}</strong></div>
+        <div className={investmentStyles.analyticsGrid}>
+          <article><span>Absolute return</span><strong>{portfolio.metricStatus.absoluteReturn === 'READY' && portfolio.absoluteReturn !== null ? money(portfolio.absoluteReturn, portfolio.currencyCode) : 'NOT_ENOUGH_DATA'}</strong>{explanation('absoluteReturn', portfolio.explanations.absoluteReturn)}</article>
+          <article><span>Return on contributions</span><strong>{portfolio.returnPercent === null ? 'NOT_ENOUGH_DATA' : `${portfolio.returnPercent}%`}</strong>{explanation('returnPercent', portfolio.explanations.returnPercent)}</article>
+          <article><span>Annualized return (XIRR)</span><strong>{portfolio.xirr.value === null ? 'NOT_ENOUGH_DATA' : `${portfolio.xirr.value}%`}</strong>{explanation('xirr', portfolio.explanations.xirr)}</article>
+          <article><span>Time-weighted return</span><strong>{portfolio.twr.value === null ? 'NOT_ENOUGH_DATA' : `${portfolio.twr.value}%`}</strong>{explanation('twr', portfolio.explanations.twr)}</article>
+          <article><span>Annualized volatility</span><strong>{portfolio.volatility.annualizedPercent === null ? 'NOT_ENOUGH_DATA' : `${portfolio.volatility.annualizedPercent}%`}</strong>{explanation('volatility', portfolio.explanations.volatility)}</article>
+          <article><span>Effective holding count</span><strong>{portfolio.metricStatus.diversification === 'READY' ? portfolio.diversification.effectiveHoldingCount : 'NOT_ENOUGH_DATA'}</strong>{explanation('diversification', portfolio.explanations.diversification)}</article>
+        </div>
+        <div className={investmentStyles.analyticsSections}>
+          <section><h3>Asset allocation</h3>{portfolio.metricStatus.allocation === 'READY' ? <ul className={investmentStyles.analyticsList}>{portfolio.allocation.map(item => <li key={item.type}><span>{item.type.replaceAll('_', ' ')}</span><strong>{item.percentage}% · {money(item.value, portfolio.currencyCode)}</strong></li>)}</ul> : <p className="muted">NOT_ENOUGH_DATA</p>}{explanation('allocation', portfolio.explanations.allocation)}</section>
+          <section><h3>Largest holdings</h3>{portfolio.metricStatus.concentration === 'READY' ? <ul className={investmentStyles.analyticsList}>{portfolio.concentration.map(item => <li key={item.investmentId}><span>{item.name}</span><strong>{item.percentage}% · {money(item.value, portfolio.currencyCode)}</strong></li>)}</ul> : <p className="muted">NOT_ENOUGH_DATA</p>}{explanation('concentration', portfolio.explanations.concentration)}</section>
+          <section><h3>Contribution and income</h3>{portfolio.metricStatus.contributionAnalysis === 'READY' ? <ul className={investmentStyles.analyticsList}>
+            <li><span>Purchases and contributions</span><strong>{money(portfolio.contributions.invested, portfolio.currencyCode)}</strong></li>
+            <li><span>Sale and withdrawal proceeds</span><strong>{money(portfolio.contributions.proceeds, portfolio.currencyCode)}</strong></li>
+            <li><span>Dividends and interest</span><strong>{money(portfolio.contributions.investmentIncome, portfolio.currencyCode)}</strong></li>
+            <li><span>Fees and taxes</span><strong>{money(portfolio.contributions.feesAndTaxes, portfolio.currencyCode)}</strong></li>
+          </ul> : <p className="muted">NOT_ENOUGH_DATA</p>}{explanation('contributionAnalysis', portfolio.explanations.contributionAnalysis)}</section>
+          <section><h3>Fixed-deposit maturity exposure</h3>{portfolio.metricStatus.maturityExposure === 'READY' ? <ul className={investmentStyles.analyticsList}>{portfolio.maturityExposure.map(item => <li key={item.bucket}><span>{item.bucket}</span><strong>{item.percentage}% · {money(item.value, portfolio.currencyCode)}</strong></li>)}</ul> : <p className="muted">NOT_ENOUGH_DATA</p>}{explanation('maturityExposure', portfolio.explanations.maturityExposure)}</section>
+          <section><h3>Historical comparison</h3>{portfolio.historicalComparison.status === 'READY' ? <p>{portfolio.historicalComparison.from} to {portfolio.historicalComparison.to}: {money(portfolio.historicalComparison.change!, portfolio.currencyCode)} ({portfolio.historicalComparison.percentage}%).</p> : <p className="muted">NOT_ENOUGH_DATA</p>}{explanation('historicalComparison', portfolio.explanations.historicalComparison)}</section>
+        </div>
+      </section>)}
+    </>}
   </section></main>;
 }

@@ -14,6 +14,7 @@ import { DEFAULT_CATEGORIES, normalizeCategoryName } from './categories.js';
 import { expectedPaydayDates, salaryPeriodStatus } from './income.js';
 import { nextRecurringDate } from './recurring.js';
 import { calculateFixedDepositValue, calculateInvestmentQuantity, validateInvestmentQuantityHistory } from './investment.js';
+import { calculatePortfolioAnalytics } from './portfolio-analytics.js';
 import { addDecimals, decimalToUnits, subtractDecimals, unitsToDecimal } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
@@ -450,6 +451,47 @@ class Api {
         })),
       })),
     };
+  }
+  @Get('spaces/:id/portfolio-analytics') async portfolioAnalytics(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const asOfDate = new Date(`${toDateOnly(new Date())}T00:00:00.000Z`);
+    const investments = await db.investment.findMany({
+      where: { account: { spaceId: membership.spaceId } },
+      include: {
+        transactions: { orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] },
+        valuations: { orderBy: [{ valuationDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] },
+      },
+      orderBy: [{ startDate: 'asc' }, { createdAt: 'asc' }],
+    });
+    return calculatePortfolioAnalytics(investments.map(investment => ({
+      id: investment.id,
+      name: investment.name,
+      type: investment.type,
+      currencyCode: investment.currencyCode.trim(),
+      costBasis: investment.costBasis.toString(),
+      startDate: investment.startDate,
+      maturityDate: investment.maturityDate,
+      annualInterestRate: investment.annualInterestRate?.toString() ?? null,
+      interestMethod: investment.interestMethod,
+      compoundingFrequency: investment.compoundingFrequency,
+      actualMaturityValue: investment.actualMaturityValue?.toString() ?? null,
+      status: investment.status,
+      closedAt: investment.closedAt,
+      transactions: investment.transactions.map(transaction => ({
+        type: transaction.type,
+        amount: transaction.amount.toString(),
+        quantity: transaction.quantity?.toString() ?? null,
+        transactionDate: transaction.transactionDate,
+      })),
+      valuations: investment.valuations.map(valuation => ({
+        valuationDate: valuation.valuationDate,
+        createdAt: valuation.createdAt,
+        marketValue: valuation.marketValue.toString(),
+        unitPrice: valuation.unitPrice?.toString() ?? null,
+        method: valuation.method,
+      })),
+    })), asOfDate);
   }
   @Post('spaces/:id/net-worth/snapshots') async createNetWorthSnapshot(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
     const user = await this.identity.user(req);

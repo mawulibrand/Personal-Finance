@@ -233,6 +233,17 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(`${investmentsPath}/${fixedDeposit.body.id}/maturity`, { actualMaturityValue: '1095', maturityDate: receivedDate }, login.cookie)).status, 400);
   const netWorthWithInvestments = await request(netWorthPath, undefined, login.cookie);
   assert.equal(netWorthWithInvestments.body.current.find(item => item.currencyCode === 'GHS').assets, '127.25');
+  const analyticsPath = `spaces/${spaces.body[0].id}/portfolio-analytics`;
+  assert.equal((await request(analyticsPath)).status, 401);
+  const portfolioAnalytics = await request(analyticsPath, undefined, login.cookie);
+  assert.equal(portfolioAnalytics.status, 200);
+  assert.equal(portfolioAnalytics.body.status, 'READY');
+  assert.equal(portfolioAnalytics.body.currencies.length, 1);
+  assert.equal(portfolioAnalytics.body.currencies[0].currencyCode, 'GHS');
+  assert.equal(portfolioAnalytics.body.currencies[0].totalValue, 97);
+  assert.equal(portfolioAnalytics.body.currencies[0].absoluteReturn, 116);
+  assert.equal(portfolioAnalytics.body.currencies[0].contributions.investmentIncome, 0);
+  assert.equal(portfolioAnalytics.body.currencies[0].explanations.xirr.formula.includes('bounded bisection'), true);
   const paydayPath = `spaces/${spaces.body[0].id}/payday-routines`;
   assert.equal((await request(paydayPath)).status, 401);
   const routineSalary = await request(incomePath, {
@@ -349,6 +360,7 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(paydayPath, undefined, bob.cookie)).status, 404);
   const bobSpaces = await request('spaces', undefined, bob.cookie);
   assert.equal((await request(investmentsPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(analyticsPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/investment-accounts/${investmentAccount.body.id}/investments`, { type: 'STOCK', name: 'Private', costBasis: '1', startDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/savings-accounts/${savingsAccount.body.id}/transactions`, { type: 'DEPOSIT', amount: '1', transactionDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/liabilities/${liability.body.id}/payments`, { amount: '1', paidAt: receivedDate }, bob.cookie)).status, 404);
