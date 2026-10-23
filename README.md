@@ -31,7 +31,7 @@ Direct dependency versions are pinned in package manifests and dependency resolu
 1. Foundation: monorepo, infrastructure, authentication, email verification, Personal Spaces, authorization, auditing, CI, health checks, logging, and staging.
 2. Personal finance: categories, income, flexible paydays, salary confirmation, expenses, recurring records, budgets, dashboard, and net cash flow.
 3. Wealth foundation: savings, liabilities, repayments, goals, snapshots, net worth, and payday routines.
-4. Investments: accounts, transactions, valuations, fixed deposits, and maturities.
+4. Investments: accounts, transactions, manual and quantity × price valuations, contractual fixed-deposit interest, and maturity payouts.
 5. Portfolio intelligence: independently verified deterministic analytics.
 6. Scenario planning: projections, assumptions, comparisons, and plan conversion.
 7. AI financial intelligence: profile snapshots, rules, strategies, feedback, and approved plans.

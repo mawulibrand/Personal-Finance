@@ -13,6 +13,7 @@ import { hashPassword, verifyPassword, newToken, hashToken, mayAccessPersonalSpa
 import { DEFAULT_CATEGORIES, normalizeCategoryName } from './categories.js';
 import { expectedPaydayDates, salaryPeriodStatus } from './income.js';
 import { nextRecurringDate } from './recurring.js';
+import { calculateFixedDepositValue, calculateInvestmentQuantity, validateInvestmentQuantityHistory } from './investment.js';
 import { addDecimals, decimalToUnits, subtractDecimals, unitsToDecimal } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
@@ -128,6 +129,70 @@ const paydayRoutineCompletionInput = z.object({
   principalAmount: nonNegativeAmount.optional(),
   description: z.string().trim().max(240).optional().transform(value => value || undefined),
 }).strict();
+const quantity = z.string().regex(/^(?:0|[1-9]\d{0,15})(?:\.\d{1,8})?$/).refine(value => new Prisma.Decimal(value).greaterThan(0), 'Quantity must be greater than zero.');
+const unitPrice = z.string().regex(/^(?:0|[1-9]\d{0,14})(?:\.\d{1,8})?$/).refine(value => new Prisma.Decimal(value).greaterThan(0), 'Unit price must be greater than zero.');
+const investmentAccountInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  provider: z.string().trim().max(100).optional().transform(value => value || undefined),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+}).strict();
+const investmentInput = z.object({
+  type: z.enum(['STOCK', 'BOND', 'TREASURY_BILL', 'MUTUAL_FUND', 'ETF', 'FIXED_INCOME', 'REAL_ESTATE', 'BUSINESS_INVESTMENT', 'CRYPTOCURRENCY', 'FIXED_DEPOSIT', 'OTHER']),
+  name: z.string().trim().min(1).max(100),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  costBasis: nonNegativeAmount.default('0'),
+  quantity: quantity.optional(),
+  startDate: dateOnly,
+  maturityDate: dateOnly.optional(),
+  annualInterestRate: interestRate.optional(),
+  interestMethod: z.enum(['SIMPLE', 'COMPOUND']).optional(),
+  compoundingFrequency: z.number().int().refine(value => [1, 2, 4, 12, 365].includes(value)).optional(),
+}).strict().superRefine((input, context) => {
+  if (input.maturityDate && input.maturityDate < input.startDate) {
+    context.addIssue({ code: 'custom', path: ['maturityDate'], message: 'Maturity date must be on or after the investment start date.' });
+  }
+  if (input.type === 'FIXED_DEPOSIT') {
+    if (input.quantity) context.addIssue({ code: 'custom', path: ['quantity'], message: 'Fixed deposits do not have tradable units.' });
+    if (decimalToUnits(input.costBasis) <= 0n) context.addIssue({ code: 'custom', path: ['costBasis'], message: 'Enter the fixed-deposit principal.' });
+    if (!input.maturityDate) context.addIssue({ code: 'custom', path: ['maturityDate'], message: 'Enter the fixed-deposit maturity date.' });
+    if (!input.annualInterestRate) context.addIssue({ code: 'custom', path: ['annualInterestRate'], message: 'Enter the annual interest rate.' });
+    if (!input.interestMethod) context.addIssue({ code: 'custom', path: ['interestMethod'], message: 'Choose an interest method.' });
+    if (!input.compoundingFrequency) context.addIssue({ code: 'custom', path: ['compoundingFrequency'], message: 'Choose a compounding frequency.' });
+  } else if (input.annualInterestRate !== undefined || input.interestMethod !== undefined || input.compoundingFrequency !== undefined) {
+    context.addIssue({ code: 'custom', path: ['type'], message: 'Fixed-deposit interest terms are only available for fixed deposits.' });
+  }
+});
+const investmentTransactionInput = z.object({
+  type: z.enum(['BUY', 'CONTRIBUTION', 'SELL', 'WITHDRAWAL', 'DIVIDEND', 'INTEREST', 'FEE', 'TAX']),
+  amount,
+  quantity: quantity.optional(),
+  transactionDate: dateOnly,
+  description: z.string().trim().max(240).optional().transform(value => value || undefined),
+}).strict().superRefine((input, context) => {
+  if (['BUY', 'SELL'].includes(input.type) && !input.quantity) {
+    context.addIssue({ code: 'custom', path: ['quantity'], message: 'Enter units bought or sold.' });
+  }
+  if (input.quantity && !['BUY', 'SELL', 'CONTRIBUTION', 'WITHDRAWAL'].includes(input.type)) {
+    context.addIssue({ code: 'custom', path: ['quantity'], message: 'Units are only available for buys, sells, contributions, and withdrawals.' });
+  }
+});
+const investmentValuationInput = z.object({
+  method: z.enum(['MANUAL', 'QUANTITY_X_PRICE']),
+  valuationDate: dateOnly,
+  marketValue: nonNegativeAmount.optional(),
+  unitPrice: unitPrice.optional(),
+}).strict().superRefine((input, context) => {
+  if (input.method === 'MANUAL' && (input.marketValue === undefined || input.unitPrice !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['marketValue'], message: 'Enter a manual market value only.' });
+  }
+  if (input.method === 'QUANTITY_X_PRICE' && (input.unitPrice === undefined || input.marketValue !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['unitPrice'], message: 'Enter a unit price only.' });
+  }
+});
+const investmentMaturityInput = z.object({
+  actualMaturityValue: amount,
+  maturityDate: dateOnly,
+}).strict();
 const recurringInput = z.object({
   name: z.string().trim().min(1).max(100),
   flow: z.enum(['INCOME', 'EXPENSE']),
@@ -158,8 +223,37 @@ function validate<T>(schema: z.ZodType<T>, input: unknown): T {
 }
 const safeUser = (u: { id: string; name: string; email: string }) => ({ id: u.id, name: u.name, email: u.email });
 const toDateOnly = (date: Date) => date.toISOString().slice(0, 10);
+type InvestmentWithHistory = Prisma.InvestmentGetPayload<{ include: { transactions: true; valuations: true } }>;
+function investmentValueAt(investment: InvestmentWithHistory, asOfDate: Date) {
+  if (investment.startDate > asOfDate) return null;
+  if (investment.closedAt && investment.closedAt <= asOfDate) return '0';
+  if (investment.type === 'FIXED_DEPOSIT') {
+    if (!investment.maturityDate || !investment.annualInterestRate || !investment.interestMethod || !investment.compoundingFrequency) {
+      throw new Error(`Fixed-deposit terms are incomplete for investment ${investment.id}.`);
+    }
+    return calculateFixedDepositValue({
+      principal: investment.costBasis.toString(),
+      annualInterestRate: investment.annualInterestRate.toString(),
+      interestMethod: investment.interestMethod,
+      compoundingFrequency: investment.compoundingFrequency,
+      startDate: investment.startDate,
+      maturityDate: investment.maturityDate,
+      valuationDate: asOfDate,
+    });
+  }
+  const valuation = investment.valuations
+    .filter(item => item.valuationDate <= asOfDate)
+    .sort((left, right) => right.valuationDate.getTime() - left.valuationDate.getTime() || right.createdAt.getTime() - left.createdAt.getTime())[0];
+  if (!valuation) return null;
+  if (valuation.method === 'QUANTITY_X_PRICE') {
+    if (!valuation.unitPrice) throw new Error(`Unit-price valuation ${valuation.id} is missing its price.`);
+    const held = calculateInvestmentQuantity(investment.transactions, asOfDate);
+    return held.mul(valuation.unitPrice).toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP).toFixed(4);
+  }
+  return valuation.marketValue.toString();
+}
 async function calculateNetWorth(spaceId: string, snapshotDate: Date, baseCurrency: string) {
-  const [accounts, liabilities] = await Promise.all([
+  const [accounts, liabilities, investments] = await Promise.all([
     db.savingsAccount.findMany({
       where: { spaceId, openedAt: { lte: snapshotDate } },
       include: { transactions: { where: { transactionDate: { lte: snapshotDate } } } },
@@ -167,6 +261,13 @@ async function calculateNetWorth(spaceId: string, snapshotDate: Date, baseCurren
     db.liability.findMany({
       where: { spaceId, startDate: { lte: snapshotDate } },
       include: { payments: { where: { paidAt: { lte: snapshotDate } } } },
+    }),
+    db.investment.findMany({
+      where: { account: { spaceId }, startDate: { lte: snapshotDate } },
+      include: {
+        transactions: { where: { transactionDate: { lte: snapshotDate } } },
+        valuations: { where: { valuationDate: { lte: snapshotDate } } },
+      },
     }),
   ]);
   const totals = new Map<string, { assets: string; liabilities: string }>();
@@ -192,6 +293,13 @@ async function calculateNetWorth(spaceId: string, snapshotDate: Date, baseCurren
     const principalPaid = addDecimals(...liability.payments.map(payment => payment.principalAmount.toString()));
     const outstanding = subtractDecimals(liability.openingBalance.toString(), principalPaid);
     currency.liabilities = addDecimals(currency.liabilities, outstanding);
+  }
+  for (const investment of investments) {
+    const value = investmentValueAt(investment, snapshotDate);
+    if (value !== null) {
+      const currency = forCurrency(investment.currencyCode);
+      currency.assets = addDecimals(currency.assets, value);
+    }
   }
   return [...totals.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currencyCode, totalsForCurrency]) => ({
     currencyCode,
@@ -1130,6 +1238,321 @@ class Api {
         transactionDate: toDateOnly(transaction.transactionDate),
         description: transaction.description,
       };
+    });
+  }
+  @Get('spaces/:id/investments') async investments(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const today = new Date(`${toDateOnly(new Date())}T00:00:00.000Z`);
+    const accounts = await db.investmentAccount.findMany({
+      where: { spaceId: membership.spaceId },
+      include: {
+        investments: {
+          include: {
+            transactions: { orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }] },
+            valuations: { orderBy: [{ valuationDate: 'desc' }, { createdAt: 'desc' }] },
+          },
+          orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+    });
+    const totalsByCurrency = new Map<string, string>();
+    for (const account of accounts) {
+      for (const investment of account.investments) {
+        const value = investmentValueAt(investment, today);
+        if (value !== null) totalsByCurrency.set(investment.currencyCode.trim(), addDecimals(totalsByCurrency.get(investment.currencyCode.trim()) ?? '0', value));
+      }
+    }
+    return {
+      baseCurrency: membership.space.baseCurrency.trim(),
+      totalsByCurrency: Object.fromEntries(totalsByCurrency),
+      accounts: accounts.map(account => ({
+        id: account.id,
+        name: account.name,
+        provider: account.provider,
+        currencyCode: account.currencyCode.trim(),
+        investments: account.investments.map(investment => {
+          const currentValue = investmentValueAt(investment, today);
+          const latestValuation = investment.valuations.find(item => item.valuationDate <= today);
+          return {
+            id: investment.id,
+            type: investment.type,
+            name: investment.name,
+            currencyCode: investment.currencyCode.trim(),
+            costBasis: investment.costBasis.toString(),
+            startDate: toDateOnly(investment.startDate),
+            maturityDate: investment.maturityDate ? toDateOnly(investment.maturityDate) : null,
+            annualInterestRate: investment.annualInterestRate?.toString() ?? null,
+            interestMethod: investment.interestMethod,
+            compoundingFrequency: investment.compoundingFrequency,
+            expectedMaturityValue: investment.expectedMaturityValue?.toString() ?? null,
+            actualMaturityValue: investment.actualMaturityValue?.toString() ?? null,
+            status: investment.status,
+            maturityStatus: investment.status === 'CLOSED' ? 'CLOSED' : investment.type === 'FIXED_DEPOSIT' && investment.maturityDate && investment.maturityDate <= today ? 'MATURED' : 'ACTIVE',
+            quantity: calculateInvestmentQuantity(investment.transactions, today).toString(),
+            currentValue,
+            valuationMethod: investment.type === 'FIXED_DEPOSIT' ? 'CONTRACTUAL' : latestValuation?.method ?? null,
+            valuationDate: investment.type === 'FIXED_DEPOSIT' ? toDateOnly(today) : latestValuation ? toDateOnly(latestValuation.valuationDate) : null,
+            transactions: investment.transactions.slice(0, 20).map(transaction => ({
+              id: transaction.id,
+              type: transaction.type,
+              amount: transaction.amount.toString(),
+              quantity: transaction.quantity?.toString() ?? null,
+              transactionDate: toDateOnly(transaction.transactionDate),
+              description: transaction.description,
+            })),
+            valuations: investment.valuations.slice(0, 20).map(valuation => ({
+              id: valuation.id,
+              valuationDate: toDateOnly(valuation.valuationDate),
+              marketValue: valuation.marketValue.toString(),
+              unitPrice: valuation.unitPrice?.toString() ?? null,
+              currencyCode: valuation.currencyCode.trim(),
+              method: valuation.method,
+            })),
+          };
+        }),
+      })),
+    };
+  }
+  @Post('spaces/:id/investment-accounts') async createInvestmentAccount(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage investments in this space.');
+    const input = validate(investmentAccountInput, body);
+    const account = await db.$transaction(async tx => {
+      const created = await tx.investmentAccount.create({
+        data: {
+          spaceId: membership.spaceId,
+          name: input.name,
+          provider: input.provider,
+          currencyCode: input.currencyCode ?? membership.space.baseCurrency,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'INVESTMENT_ACCOUNT_CREATED' } });
+      return created;
+    });
+    return { id: account.id, name: account.name, provider: account.provider, currencyCode: account.currencyCode.trim(), investments: [] };
+  }
+  @Post('spaces/:id/investment-accounts/:accountId/investments') async createInvestment(@Req() req: Request, @Param('id') id: string, @Param('accountId') accountId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage investments in this space.');
+    const validAccountId = validate(z.string().uuid(), accountId);
+    const input = validate(investmentInput, body);
+    const today = toDateOnly(new Date());
+    if (input.startDate > today) throw new BadRequestException('Investment start date cannot be in the future.');
+    const created = await db.$transaction(async tx => {
+      const account = await tx.investmentAccount.findFirst({ where: { id: validAccountId, spaceId: membership.spaceId } });
+      if (!account) throw new NotFoundException();
+      if (input.quantity && decimalToUnits(input.costBasis) <= 0n) throw new BadRequestException('Enter a positive cost basis when adding opening units.');
+      const currencyCode = input.currencyCode ?? account.currencyCode;
+      const maturityDate = input.maturityDate ? new Date(`${input.maturityDate}T00:00:00.000Z`) : null;
+      const expectedMaturityValue = input.type === 'FIXED_DEPOSIT' && maturityDate
+        ? calculateFixedDepositValue({
+          principal: input.costBasis,
+          annualInterestRate: input.annualInterestRate!,
+          interestMethod: input.interestMethod!,
+          compoundingFrequency: input.compoundingFrequency!,
+          startDate: new Date(`${input.startDate}T00:00:00.000Z`),
+          maturityDate,
+          valuationDate: maturityDate,
+        })
+        : null;
+      const investment = await tx.investment.create({
+        data: {
+          accountId: account.id,
+          type: input.type,
+          name: input.name,
+          currencyCode,
+          costBasis: input.costBasis,
+          startDate: new Date(`${input.startDate}T00:00:00.000Z`),
+          maturityDate,
+          annualInterestRate: input.type === 'FIXED_DEPOSIT' ? input.annualInterestRate : null,
+          interestMethod: input.type === 'FIXED_DEPOSIT' ? input.interestMethod : null,
+          compoundingFrequency: input.type === 'FIXED_DEPOSIT' ? input.compoundingFrequency : null,
+          expectedMaturityValue,
+          createdBy: user.id,
+        },
+      });
+      if (decimalToUnits(input.costBasis) > 0n) {
+        await tx.investmentTransaction.create({
+          data: {
+            investmentId: investment.id,
+            type: input.type === 'FIXED_DEPOSIT' ? 'CONTRIBUTION' : input.quantity ? 'BUY' : 'CONTRIBUTION',
+            amount: input.costBasis,
+            quantity: input.quantity,
+            transactionDate: investment.startDate,
+            description: 'Opening investment',
+            createdBy: user.id,
+          },
+        });
+      }
+      if (input.type === 'FIXED_DEPOSIT') {
+        await tx.investmentValuation.create({
+          data: {
+            investmentId: investment.id,
+            valuationDate: investment.startDate,
+            marketValue: input.costBasis,
+            currencyCode,
+            method: 'CONTRACTUAL',
+            createdBy: user.id,
+          },
+        });
+        await tx.investmentValuation.create({
+          data: {
+            investmentId: investment.id,
+            valuationDate: maturityDate!,
+            marketValue: expectedMaturityValue!,
+            currencyCode,
+            method: 'CONTRACTUAL',
+            createdBy: user.id,
+          },
+        });
+      }
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'INVESTMENT_CREATED' } });
+      return investment;
+    });
+    return { id: created.id, type: created.type, name: created.name, currencyCode: created.currencyCode.trim(), costBasis: created.costBasis.toString(), startDate: toDateOnly(created.startDate), maturityDate: created.maturityDate ? toDateOnly(created.maturityDate) : null, expectedMaturityValue: created.expectedMaturityValue?.toString() ?? null };
+  }
+  @Post('spaces/:id/investments/:investmentId/transactions') async recordInvestmentTransaction(@Req() req: Request, @Param('id') id: string, @Param('investmentId') investmentId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record investment transactions in this space.');
+    const validInvestmentId = validate(z.string().uuid(), investmentId);
+    const input = validate(investmentTransactionInput, body);
+    if (input.transactionDate > toDateOnly(new Date())) throw new BadRequestException('Investment transaction date cannot be in the future.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT i."id" FROM "Investment" i JOIN "InvestmentAccount" a ON a."id" = i."accountId" WHERE i."id" = ${validInvestmentId} AND a."spaceId" = ${membership.spaceId} FOR UPDATE OF i`;
+      const investment = await tx.investment.findFirst({
+        where: { id: validInvestmentId, account: { spaceId: membership.spaceId } },
+        include: { transactions: { orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] } },
+      });
+      if (!investment) throw new NotFoundException();
+      if (investment.status === 'CLOSED') throw new BadRequestException('Closed investments cannot receive new transactions.');
+      if (investment.type === 'FIXED_DEPOSIT' && input.quantity) throw new BadRequestException('Fixed deposits do not have tradable units.');
+      if (input.transactionDate < toDateOnly(investment.startDate)) throw new BadRequestException('Transaction date cannot be before the investment start date.');
+      if (investment.type === 'FIXED_DEPOSIT' && investment.maturityDate && input.transactionDate > toDateOnly(investment.maturityDate)) {
+        throw new BadRequestException('Fixed-deposit transactions cannot be dated after maturity.');
+      }
+      if (input.quantity && !validateInvestmentQuantityHistory(investment.transactions.map(transaction => ({
+        id: transaction.id,
+        type: transaction.type,
+        quantity: transaction.quantity?.toString() ?? null,
+        transactionDate: transaction.transactionDate,
+        createdAt: transaction.createdAt,
+      })), {
+        type: input.type,
+        quantity: input.quantity,
+        transactionDate: new Date(`${input.transactionDate}T00:00:00.000Z`),
+      })) {
+        throw new BadRequestException('This transaction would make the dated investment units negative.');
+      }
+      const transaction = await tx.investmentTransaction.create({
+        data: {
+          investmentId: investment.id,
+          type: input.type,
+          amount: input.amount,
+          quantity: input.quantity,
+          transactionDate: new Date(`${input.transactionDate}T00:00:00.000Z`),
+          description: input.description,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: `INVESTMENT_${input.type}_RECORDED` } });
+      return { id: transaction.id, type: transaction.type, amount: transaction.amount.toString(), quantity: transaction.quantity?.toString() ?? null, currencyCode: investment.currencyCode.trim(), transactionDate: toDateOnly(transaction.transactionDate), description: transaction.description };
+    });
+  }
+  @Post('spaces/:id/investments/:investmentId/valuations') async recordInvestmentValuation(@Req() req: Request, @Param('id') id: string, @Param('investmentId') investmentId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record investment valuations in this space.');
+    const validInvestmentId = validate(z.string().uuid(), investmentId);
+    const input = validate(investmentValuationInput, body);
+    const today = toDateOnly(new Date());
+    if (input.valuationDate > today) throw new BadRequestException('Valuation date cannot be in the future.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT i."id" FROM "Investment" i JOIN "InvestmentAccount" a ON a."id" = i."accountId" WHERE i."id" = ${validInvestmentId} AND a."spaceId" = ${membership.spaceId} FOR UPDATE OF i`;
+      const investment = await tx.investment.findFirst({
+        where: { id: validInvestmentId, account: { spaceId: membership.spaceId } },
+        include: { transactions: { orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] } },
+      });
+      if (!investment) throw new NotFoundException();
+      if (investment.status === 'CLOSED') throw new BadRequestException('Closed investments cannot be revalued.');
+      if (investment.type === 'FIXED_DEPOSIT') throw new BadRequestException('Fixed deposits use calculated contractual valuations.');
+      if (input.valuationDate < toDateOnly(investment.startDate)) throw new BadRequestException('Valuation date cannot be before the investment start date.');
+      if (input.method === 'QUANTITY_X_PRICE' && calculateInvestmentQuantity(investment.transactions.map(transaction => ({
+        type: transaction.type,
+        quantity: transaction.quantity?.toString() ?? null,
+        transactionDate: transaction.transactionDate,
+      })), new Date(`${input.valuationDate}T00:00:00.000Z`)).lessThanOrEqualTo(0)) {
+        throw new BadRequestException('Quantity × price valuation requires positive units held on that date.');
+      }
+      const marketValue = input.method === 'MANUAL'
+        ? input.marketValue!
+        : calculateInvestmentQuantity(investment.transactions.map(transaction => ({
+          type: transaction.type,
+          quantity: transaction.quantity?.toString() ?? null,
+          transactionDate: transaction.transactionDate,
+        })), new Date(`${input.valuationDate}T00:00:00.000Z`)).mul(input.unitPrice!).toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP).toFixed(4);
+      const valuation = await tx.investmentValuation.create({
+        data: {
+          investmentId: investment.id,
+          valuationDate: new Date(`${input.valuationDate}T00:00:00.000Z`),
+          marketValue,
+          unitPrice: input.method === 'QUANTITY_X_PRICE' ? input.unitPrice : null,
+          currencyCode: investment.currencyCode,
+          method: input.method,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: `INVESTMENT_VALUATION_${input.method}_RECORDED` } });
+      return { id: valuation.id, valuationDate: toDateOnly(valuation.valuationDate), marketValue: valuation.marketValue.toString(), unitPrice: valuation.unitPrice?.toString() ?? null, currencyCode: valuation.currencyCode.trim(), method: valuation.method };
+    });
+  }
+  @Post('spaces/:id/investments/:investmentId/maturity') async recordInvestmentMaturity(@Req() req: Request, @Param('id') id: string, @Param('investmentId') investmentId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to record fixed-deposit maturity in this space.');
+    const validInvestmentId = validate(z.string().uuid(), investmentId);
+    const input = validate(investmentMaturityInput, body);
+    const today = toDateOnly(new Date());
+    if (input.maturityDate > today) throw new BadRequestException('Maturity payout date cannot be in the future.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT i."id" FROM "Investment" i JOIN "InvestmentAccount" a ON a."id" = i."accountId" WHERE i."id" = ${validInvestmentId} AND a."spaceId" = ${membership.spaceId} FOR UPDATE OF i`;
+      const investment = await tx.investment.findFirst({ where: { id: validInvestmentId, account: { spaceId: membership.spaceId } } });
+      if (!investment) throw new NotFoundException();
+      if (investment.type !== 'FIXED_DEPOSIT' || !investment.maturityDate) throw new BadRequestException('Only fixed deposits have a maturity payout.');
+      if (investment.status === 'CLOSED') throw new BadRequestException('This fixed deposit already has a recorded maturity payout.');
+      if (input.maturityDate < toDateOnly(investment.maturityDate)) throw new BadRequestException('Payout date cannot be before the contracted maturity date.');
+      const date = new Date(`${input.maturityDate}T00:00:00.000Z`);
+      const valuation = await tx.investmentValuation.create({
+        data: {
+          investmentId: investment.id,
+          valuationDate: date,
+          marketValue: input.actualMaturityValue,
+          currencyCode: investment.currencyCode,
+          method: 'MANUAL',
+          createdBy: user.id,
+        },
+      });
+      await tx.investmentTransaction.create({
+        data: {
+          investmentId: investment.id,
+          type: 'WITHDRAWAL',
+          amount: input.actualMaturityValue,
+          transactionDate: date,
+          description: 'Fixed-deposit maturity payout',
+          createdBy: user.id,
+        },
+      });
+      await tx.investment.update({
+        where: { id: investment.id },
+        data: { status: 'CLOSED', closedAt: date, actualMaturityValue: input.actualMaturityValue },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'FIXED_DEPOSIT_MATURITY_RECORDED' } });
+      return { id: valuation.id, maturityDate: input.maturityDate, actualMaturityValue: input.actualMaturityValue, currencyCode: investment.currencyCode.trim(), status: 'CLOSED' };
     });
   }
   @Get('spaces/:id/goals') async goals(@Req() req: Request, @Param('id') id: string) {

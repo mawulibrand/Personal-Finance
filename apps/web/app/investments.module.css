@@ -1,0 +1,280 @@
+.page {
+  padding-top: 48px !important;
+}
+
+.page h1 {
+  margin: 14px 0;
+  font-family: Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+}
+
+.panel {
+  margin: 24px 0;
+  padding: 26px 28px;
+  border: 1px solid #dce1d7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.panel h2 {
+  margin: 0 0 18px;
+  font-size: 24px;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 10px 20px;
+}
+
+.form label {
+  margin: 8px 0;
+}
+
+.form input,
+.form select {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.form button {
+  justify-self: start;
+  width: auto;
+  min-width: 180px;
+}
+
+.hint,
+.optional {
+  color: #64746c;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.optional {
+  color: #78857c;
+}
+
+.totals,
+.accounts,
+.holdings,
+.history {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.totals {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.totals article,
+.account,
+.holding,
+.valuation {
+  padding: 20px;
+  border: 1px solid #e2e7df;
+  border-radius: 10px;
+}
+
+.totals article {
+  display: grid;
+  gap: 8px;
+  background: #f1f5ed;
+}
+
+.totals span,
+.muted {
+  color: #64746c;
+}
+
+.accountHeading,
+.holdingHeading,
+.valuationHeading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.accountHeading h3,
+.holdingHeading h4,
+.valuationHeading h5 {
+  margin: 0;
+}
+
+.accountHeading h3 {
+  font-size: 21px;
+}
+
+.holdingHeading h4 {
+  font-size: 18px;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 7px;
+  color: #64746c;
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+
+.accountHeading p,
+.holdingHeading p {
+  margin: 6px 0;
+}
+
+.holding {
+  padding: 18px;
+  background: #fbfcf9;
+}
+
+.value {
+  white-space: nowrap;
+  font-size: 20px;
+}
+
+.forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.subform {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 12px;
+  padding: 15px;
+  border-radius: 8px;
+  background: #f4f6f1;
+}
+
+.subform h5,
+.subform .hint,
+.subform button {
+  grid-column: 1 / -1;
+}
+
+.subform h5 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.subform label {
+  display: block;
+  font-size: 13px;
+}
+
+.subform input,
+.subform select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid #c9d1c9;
+  border-radius: 6px;
+  background: #fff;
+  color: #18332b;
+}
+
+.subform button {
+  justify-self: start;
+  width: auto;
+  min-width: 160px;
+}
+
+.transactions,
+.valuations {
+  padding: 0;
+  margin: 14px 0 0;
+  list-style: none;
+}
+
+.transactions li,
+.valuations li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 0;
+  border-top: 1px solid #e9ede6;
+}
+
+.transactions li > div,
+.valuations li > div {
+  display: grid;
+  gap: 5px;
+}
+
+.transactions span,
+.valuations span {
+  color: #64746c;
+  font-size: 12px;
+}
+
+.positive {
+  color: #286548;
+}
+
+.negative {
+  color: #8c4c3d;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 32px !important;
+  }
+
+  .page h1 {
+    font-size: 38px;
+  }
+
+  .panel {
+    padding: 20px;
+  }
+
+  .form,
+  .forms {
+    grid-template-columns: 1fr;
+  }
+
+  .form button,
+  .subform button {
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .subform {
+    grid-template-columns: 1fr;
+  }
+
+  .subform h5,
+  .subform .hint,
+  .subform button {
+    grid-column: auto;
+  }
+
+  .account,
+  .holding {
+    padding: 16px;
+  }
+
+  .accountHeading,
+  .holdingHeading {
+    flex-direction: column;
+  }
+}

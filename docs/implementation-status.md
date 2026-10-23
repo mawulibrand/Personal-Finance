@@ -14,18 +14,20 @@
 - Phase 3 goals: currency-specific targets, optional target dates and descriptions, dated contribution/withdrawal history, progress tracking, completion status, and protection against negative dated balances.
 - Phase 3 net worth: current tracked savings less outstanding liability principal, grouped by original currency, plus immutable dated snapshots generated from balances as of the selected date. No FX conversion, cash, property, or investments are included.
 - Phase 3 payday routines: reusable fixed-amount actions per salary source for savings, goals, and liabilities; routine entries are created when salary is confirmed, and users can record partial/completed actions or skip them after performing any external transfer. Routine completion records the matching financial transaction; no money is moved automatically.
+- Phase 4 investments: investment accounts and holdings, dated BUY/CONTRIBUTION/SELL/WITHDRAWAL/income/fee/tax records, manual valuations, quantity × price valuations from dated unit balances, contractual simple/compound fixed deposits, expected and actual maturity values, and valuation history. Contract values are calculated with actual/365 day counting, using annual, semiannual, quarterly, monthly, or daily compounding; projected maturity valuations remain distinct from actual payout valuations. Valued holdings contribute to net-worth totals in their original currency; no FX conversion or trades are performed.
 
 ## Local verification
 
 - `pnpm.cmd typecheck` passes across all workspaces.
 - `pnpm.cmd --filter @pf/api test` passes all API unit tests.
 - `pnpm.cmd build` succeeds for the API, worker, and web app.
-- `node --env-file=.env --test tests/integration/identity.test.mjs` covers identity, categories, income, expenses, recurring confirmations, budgets, cash flow, savings, liabilities, financial goals, net-worth snapshots, payday routines, and cross-space privacy checks.
-- The foundation, category, income, expense, recurring-record, budget, savings, liability, financial-goal, net-worth snapshot, and payday-routine migrations are applied to the local development database.
+- `node --env-file=.env --test tests/integration/identity.test.mjs` covers identity, categories, income, expenses, recurring confirmations, budgets, cash flow, savings, liabilities, financial goals, net-worth snapshots, payday routines, investment transactions and valuations, fixed-deposit maturity, and cross-space privacy checks.
+- Investment valuations and fixed-deposit estimates use deterministic actual/365 day counting; simple interest uses `A = P(1 + rt)` and compound interest uses `A = P(1 + r/n)^(nt)`. Contract estimates stop at maturity and exclude provider-specific fees, taxes, and rounding. The expected maturity value is saved as a contractual valuation, separate from the actual payout valuation and recorded receipt.
+- The foundation, category, income, expense, recurring-record, budget, savings, liability, financial-goal, net-worth snapshot, payday-routine, and investment migrations are applied to the local development database.
 
 ## Remaining work
 
-- Phase 3 wealth foundation slices are implemented locally. Later phases: investments, deterministic analytics, planning, household finance, notifications, and production hardening.
+- Phase 3 wealth foundation and Phase 4 investment slices are implemented locally. Later phases: deterministic analytics, planning, household finance, notifications, and production hardening.
 - Staging deployment, browser-based end-to-end coverage, operational monitoring, backup/restore exercises, and production setup are not complete.
 
 See [delivery phases](delivery-phases.txt) for the planned sequence and acceptance criteria. Do not treat this local development slice as production-ready.

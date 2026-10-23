@@ -78,6 +78,42 @@ enum PaydayActionStatus {
   COMPLETED
   SKIPPED
 }
+enum InvestmentType {
+  STOCK
+  BOND
+  TREASURY_BILL
+  MUTUAL_FUND
+  ETF
+  FIXED_INCOME
+  REAL_ESTATE
+  BUSINESS_INVESTMENT
+  CRYPTOCURRENCY
+  FIXED_DEPOSIT
+  OTHER
+}
+enum InvestmentTransactionType {
+  BUY
+  CONTRIBUTION
+  SELL
+  WITHDRAWAL
+  DIVIDEND
+  INTEREST
+  FEE
+  TAX
+}
+enum InvestmentValuationMethod {
+  MANUAL
+  QUANTITY_X_PRICE
+  CONTRACTUAL
+}
+enum FixedDepositInterestMethod {
+  SIMPLE
+  COMPOUND
+}
+enum InvestmentStatus {
+  ACTIVE
+  CLOSED
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -100,6 +136,10 @@ model User {
   netWorthSnapshots NetWorthSnapshot[]
   goalContributions GoalContribution[]
   paydayRoutineActions PaydayRoutineAction[]
+  investmentAccounts InvestmentAccount[]
+  investments Investment[]
+  investmentTransactions InvestmentTransaction[]
+  investmentValuations InvestmentValuation[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -122,6 +162,7 @@ model FinancialSpace {
   goals FinancialGoal[]
   netWorthSnapshots NetWorthSnapshot[]
   paydayRoutineActions PaydayRoutineAction[]
+  investmentAccounts InvestmentAccount[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -464,4 +505,72 @@ model PaydayRoutineEntry {
   action PaydayRoutineAction @relation(fields: [actionId], references: [id], onDelete: Restrict)
   @@unique([incomeRecordId, actionId])
   @@index([status, createdAt])
+}
+model InvestmentAccount {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  provider String?
+  currencyCode String @default("GHS") @db.Char(3)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  investments Investment[]
+  @@index([spaceId, createdAt])
+}
+model Investment {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @db.Uuid
+  type InvestmentType
+  name String
+  currencyCode String @db.Char(3)
+  costBasis Decimal @default(0) @db.Decimal(19, 4)
+  startDate DateTime @db.Date
+  maturityDate DateTime? @db.Date
+  annualInterestRate Decimal? @db.Decimal(7, 4)
+  interestMethod FixedDepositInterestMethod?
+  compoundingFrequency Int?
+  expectedMaturityValue Decimal? @db.Decimal(19, 4)
+  actualMaturityValue Decimal? @db.Decimal(19, 4)
+  status InvestmentStatus @default(ACTIVE)
+  closedAt DateTime? @db.Date
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  account InvestmentAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  transactions InvestmentTransaction[]
+  valuations InvestmentValuation[]
+  @@index([accountId, status, startDate])
+  @@index([type, maturityDate])
+}
+model InvestmentTransaction {
+  id String @id @default(uuid()) @db.Uuid
+  investmentId String @db.Uuid
+  type InvestmentTransactionType
+  amount Decimal @db.Decimal(19, 4)
+  quantity Decimal? @db.Decimal(24, 8)
+  transactionDate DateTime @db.Date
+  description String?
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([investmentId, transactionDate, createdAt])
+}
+model InvestmentValuation {
+  id String @id @default(uuid()) @db.Uuid
+  investmentId String @db.Uuid
+  valuationDate DateTime @db.Date
+  marketValue Decimal @db.Decimal(19, 4)
+  unitPrice Decimal? @db.Decimal(19, 8)
+  currencyCode String @db.Char(3)
+  method InvestmentValuationMethod
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([investmentId, valuationDate, createdAt])
 }

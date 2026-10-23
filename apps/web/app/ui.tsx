@@ -13,6 +13,7 @@ import liabilityStyles from './liabilities.module.css';
 import goalStyles from './goals.module.css';
 import netWorthStyles from './net-worth.module.css';
 import paydayStyles from './payday.module.css';
+import investmentStyles from './investments.module.css';
 export async function api(path: string, body?: unknown) {
   const response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   const result = await response.json().catch(() => ({ message: 'The service is unavailable. Please try again.' }));
@@ -75,6 +76,7 @@ const workspaceLinks = [
   { href: '/income', label: 'Income' },
   { href: '/expenses', label: 'Expenses' },
   { href: '/savings', label: 'Savings' },
+  { href: '/investments', label: 'Investments' },
   { href: '/goals', label: 'Goals' },
   { href: '/net-worth', label: 'Net worth' },
   { href: '/payday', label: 'Payday routine' },
@@ -952,7 +954,7 @@ export function NetWorth() {
   }
   return <main className="dashboard"><section className={`${netWorthStyles.page} ${workspaceStyles.page}`}>
     <p className="eyebrow">PERSONAL SPACE · {data?.baseCurrency ?? 'GHS'}</p><h1>Net worth</h1>
-    <p className="muted">Your tracked savings minus outstanding debt principal. Values stay separated by currency; no exchange-rate conversion is applied. Cash, property, and investments are not included yet.</p>
+    <p className="muted">Your tracked savings and valued investments minus outstanding debt principal. Values stay separated by currency; no exchange-rate conversion is applied. Cash, property, and unvalued investments are not included.</p>
     {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
     <section className={netWorthStyles.panel}>
       <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">CURRENT POSITION</p><h2>As of {data?.snapshotDate ?? '—'}</h2></div></div>
@@ -962,7 +964,7 @@ export function NetWorth() {
     </section>
     <section className={netWorthStyles.panel}>
       <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">HISTORY</p><h2>Save a snapshot</h2></div></div>
-      <p className="muted">Snapshots are calculated from savings and liability entries on the selected date and are preserved as recorded. Only one snapshot can be saved per day.</p>
+      <p className="muted">Snapshots use savings, liability, and investment records available on the selected date and are preserved as recorded. Only one snapshot can be saved per day.</p>
       <form className={netWorthStyles.snapshotForm} onSubmit={event => void createSnapshot(event)}>
         <label>Snapshot date<input type="date" value={snapshotDate} onChange={event => setSnapshotDate(event.target.value)} max={data?.snapshotDate ?? localDate()} required /></label>
         <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Save snapshot'}</button>
@@ -1139,6 +1141,237 @@ export function PaydayRoutines() {
             <div className={paydayStyles.buttons}><button disabled={busy}>{busy ? 'Saving…' : 'Record completed action'}</button><button className={paydayStyles.skip} type="button" disabled={busy} onClick={() => void skipAction(entry)}>Skip</button></div>
           </form>
         </> : null}
+      </article>)}</div>}
+    </section>
+  </section></main>;
+}
+
+type InvestmentTransaction = {
+  id: string;
+  type: string;
+  amount: string;
+  quantity: string | null;
+  transactionDate: string;
+  description: string | null;
+};
+type InvestmentValuation = {
+  id: string;
+  valuationDate: string;
+  marketValue: string;
+  unitPrice: string | null;
+  currencyCode: string;
+  method: string;
+};
+type InvestmentHolding = {
+  id: string;
+  type: string;
+  name: string;
+  currencyCode: string;
+  costBasis: string;
+  startDate: string;
+  maturityDate: string | null;
+  annualInterestRate: string | null;
+  interestMethod: 'SIMPLE' | 'COMPOUND' | null;
+  compoundingFrequency: number | null;
+  expectedMaturityValue: string | null;
+  actualMaturityValue: string | null;
+  status: 'ACTIVE' | 'CLOSED';
+  maturityStatus: 'ACTIVE' | 'MATURED' | 'CLOSED';
+  quantity: string;
+  currentValue: string | null;
+  valuationMethod: string | null;
+  valuationDate: string | null;
+  transactions: InvestmentTransaction[];
+  valuations: InvestmentValuation[];
+};
+type InvestmentAccountOverview = {
+  id: string;
+  name: string;
+  provider: string | null;
+  currencyCode: string;
+  investments: InvestmentHolding[];
+};
+type InvestmentOverview = { baseCurrency: string; totalsByCurrency: Record<string, string>; accounts: InvestmentAccountOverview[] };
+const investmentTypes = [
+  ['STOCK', 'Stock'], ['BOND', 'Bond'], ['TREASURY_BILL', 'Treasury bill'], ['MUTUAL_FUND', 'Mutual fund'], ['ETF', 'ETF'],
+  ['FIXED_INCOME', 'Fixed income'], ['REAL_ESTATE', 'Real estate'], ['BUSINESS_INVESTMENT', 'Business investment'],
+  ['CRYPTOCURRENCY', 'Cryptocurrency'], ['FIXED_DEPOSIT', 'Fixed deposit'], ['OTHER', 'Other'],
+];
+const transactionTypes = [
+  ['BUY', 'Buy'], ['CONTRIBUTION', 'Contribution'], ['SELL', 'Sell'], ['WITHDRAWAL', 'Withdrawal'],
+  ['DIVIDEND', 'Dividend'], ['INTEREST', 'Interest'], ['FEE', 'Fee'], ['TAX', 'Tax'],
+];
+const compoundingFrequencies = [[1, 'Annually'], [2, 'Semiannually'], [4, 'Quarterly'], [12, 'Monthly'], [365, 'Daily']];
+export function Investments() {
+  const [spaceId, setSpaceId] = useState('');
+  const [data, setData] = useState<InvestmentOverview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/investments`);
+      if (active) { setSpaceId(spaces[0].id); setData(result); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load investments.'); }
+  })(); return () => { active = false; }; }, []);
+  async function reload() {
+    if (spaceId) setData(await api(`spaces/${spaceId}/investments`));
+  }
+  function money(value: string, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)); }
+    catch { return `${currency} ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value))}`; }
+  }
+  async function createAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      name: String(form.get('name') ?? '').trim(),
+      currencyCode: String(form.get('currencyCode') ?? data?.baseCurrency ?? 'GHS').trim().toUpperCase(),
+    };
+    const provider = String(form.get('provider') ?? '').trim();
+    if (provider) payload.provider = provider;
+    try { await api(`spaces/${spaceId}/investment-accounts`, payload); await reload(); formElement.reset(); setMessage('Investment account added.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this account.'); }
+    finally { setBusy(false); }
+  }
+  async function createInvestment(event: FormEvent<HTMLFormElement>, account: InvestmentAccountOverview) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const type = String(form.get('type') ?? 'STOCK');
+    const payload: Record<string, string | number> = {
+      type,
+      name: String(form.get('name') ?? '').trim(),
+      currencyCode: String(form.get('currencyCode') ?? account.currencyCode).trim().toUpperCase(),
+      costBasis: String(form.get('costBasis') ?? '0').trim() || '0',
+      startDate: String(form.get('startDate') ?? ''),
+    };
+    const quantity = String(form.get('quantity') ?? '').trim();
+    const maturityDate = String(form.get('maturityDate') ?? '').trim();
+    if (quantity) payload.quantity = quantity;
+    if (maturityDate) payload.maturityDate = maturityDate;
+    if (type === 'FIXED_DEPOSIT') {
+      payload.annualInterestRate = String(form.get('annualInterestRate') ?? '').trim();
+      payload.interestMethod = String(form.get('interestMethod') ?? 'SIMPLE');
+      payload.compoundingFrequency = Number(form.get('compoundingFrequency') ?? '1');
+    }
+    try { await api(`spaces/${spaceId}/investment-accounts/${account.id}/investments`, payload); await reload(); formElement.reset(); setMessage(`${type === 'FIXED_DEPOSIT' ? 'Fixed deposit' : 'Investment'} added.`); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this investment.'); }
+    finally { setBusy(false); }
+  }
+  async function recordTransaction(event: FormEvent<HTMLFormElement>, holding: InvestmentHolding) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      type: String(form.get('type') ?? 'BUY'),
+      amount: String(form.get('amount') ?? '').trim(),
+      transactionDate: String(form.get('transactionDate') ?? ''),
+    };
+    const quantity = String(form.get('quantity') ?? '').trim();
+    const description = String(form.get('description') ?? '').trim();
+    if (quantity) payload.quantity = quantity;
+    if (description) payload.description = description;
+    try { await api(`spaces/${spaceId}/investments/${holding.id}/transactions`, payload); await reload(); formElement.reset(); setMessage('Investment transaction recorded.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to record this transaction.'); }
+    finally { setBusy(false); }
+  }
+  async function recordValuation(event: FormEvent<HTMLFormElement>, holding: InvestmentHolding) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const method = String(form.get('method') ?? 'MANUAL');
+    const payload: Record<string, string> = {
+      method,
+      valuationDate: String(form.get('valuationDate') ?? ''),
+    };
+    if (method === 'MANUAL') payload.marketValue = String(form.get('marketValue') ?? '').trim();
+    else payload.unitPrice = String(form.get('unitPrice') ?? '').trim();
+    try { await api(`spaces/${spaceId}/investments/${holding.id}/valuations`, payload); await reload(); formElement.reset(); setMessage('Valuation saved to history.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this valuation.'); }
+    finally { setBusy(false); }
+  }
+  async function recordMaturity(event: FormEvent<HTMLFormElement>, holding: InvestmentHolding) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload = {
+      actualMaturityValue: String(form.get('actualMaturityValue') ?? '').trim(),
+      maturityDate: String(form.get('maturityDate') ?? ''),
+    };
+    try { await api(`spaces/${spaceId}/investments/${holding.id}/maturity`, payload); await reload(); setMessage('Maturity payout recorded and the fixed deposit closed.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to record maturity.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="dashboard"><section className={`${investmentStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PERSONAL SPACE · {data?.baseCurrency ?? 'GHS'}</p><h1>Investments</h1>
+    <p className="muted">Track investment transactions and dated valuations. Unit-price values use units held × your entered price. Fixed-deposit values use the contracted simple or compound interest terms. This tracker does not hold or move money.</p>
+    {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
+    <section className={investmentStyles.panel}><h2>Add an investment account</h2><form className={investmentStyles.form} onSubmit={event => void createAccount(event)}>
+      <label>Account name<input name="name" required maxLength={100} placeholder="e.g. Brokerage account" /></label>
+      <label>Broker or institution <span className={investmentStyles.optional}>(optional)</span><input name="provider" maxLength={100} placeholder="e.g. Investment provider" /></label>
+      <label>Account currency<input name="currencyCode" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" defaultValue={data?.baseCurrency ?? 'GHS'} required /></label>
+      <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Add account'}</button>
+    </form></section>
+    <section className={investmentStyles.panel}><h2>Portfolio value</h2>
+      {!data ? <p role="status">Loading investments…</p> : Object.keys(data.totalsByCurrency).length === 0 ? <p className="muted">No valued investments yet. Add an investment account to begin.</p> : <div className={investmentStyles.totals}>{Object.entries(data.totalsByCurrency).map(([currency, total]) => <article key={currency}><span>Total tracked in {currency}</span><strong>{money(total, currency)}</strong></article>)}</div>}
+    </section>
+    <section className={investmentStyles.panel}><h2>Accounts and holdings</h2>
+      {!data ? <p role="status">Loading accounts…</p> : data.accounts.length === 0 ? <p className="muted">No investment accounts yet. Add one above to record holdings and fixed deposits.</p> : <div className={investmentStyles.accounts}>{data.accounts.map(account => <article className={investmentStyles.account} key={account.id}>
+        <div className={investmentStyles.accountHeading}><div><span className={investmentStyles.eyebrow}>INVESTMENT ACCOUNT · {account.currencyCode}</span><h3>{account.name}</h3><p className="muted">{account.provider ?? 'No provider specified'}</p></div></div>
+        <form className={investmentStyles.form} onSubmit={event => void createInvestment(event, account)}>
+          <label>Investment type<select name="type" defaultValue="STOCK">{investmentTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Investment name<input name="name" required maxLength={100} placeholder="e.g. Fund or fixed deposit name" /></label>
+          <label>Currency<input name="currencyCode" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" defaultValue={account.currencyCode} required /></label>
+          <label>Initial cost / principal<input name="costBasis" type="number" min="0" step="0.0001" defaultValue="0" required /></label>
+          <label>Opening units <span className={investmentStyles.optional}>(optional)</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" /></label>
+          <label>Start date<input name="startDate" type="date" defaultValue={localDate()} max={localDate()} required /></label>
+          <label>Maturity date <span className={investmentStyles.optional}>(required for fixed deposits)</span><input name="maturityDate" type="date" /></label>
+          <label>Annual interest rate (%)<input name="annualInterestRate" type="number" min="0" max="100" step="0.0001" placeholder="Fixed deposits only" /></label>
+          <label>Interest method<select name="interestMethod" defaultValue="SIMPLE"><option value="SIMPLE">Simple</option><option value="COMPOUND">Compound</option></select></label>
+          <label>Compounding frequency<select name="compoundingFrequency" defaultValue="1">{compoundingFrequencies.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <p className={investmentStyles.hint}>For ordinary investments, cost basis and opening units are optional; record later buys, contributions, or valuations below. Fixed-deposit value is estimated through the maturity date using A = P(1 + rt) for simple interest or A = P(1 + r/n)^(nt) for compound interest. Day count is actual/365; fees, taxes, and provider-specific rounding are not projected.</p>
+          <button disabled={busy}>{busy ? 'Saving…' : 'Add investment'}</button>
+        </form>
+        {account.investments.length === 0 ? <p className="muted">No holdings in this account yet.</p> : <div className={investmentStyles.holdings}>{account.investments.map(holding => {
+          const isFixedDeposit = holding.type === 'FIXED_DEPOSIT';
+          return <article className={investmentStyles.holding} key={holding.id}>
+            <div className={investmentStyles.holdingHeading}><div><span className={investmentStyles.eyebrow}>{investmentTypes.find(([value]) => value === holding.type)?.[1] ?? holding.type} · {holding.currencyCode} · {holding.maturityStatus}</span><h4>{holding.name}</h4><p className="muted">Started {holding.startDate}{holding.maturityDate ? ` · Matures ${holding.maturityDate}` : ''}{holding.valuationDate ? ` · Valued ${holding.valuationDate}` : ''}</p>
+              {isFixedDeposit && <p className="muted">{holding.interestMethod?.toLowerCase()} interest at {holding.annualInterestRate}% · {compoundingFrequencies.find(([value]) => value === holding.compoundingFrequency)?.[1] ?? 'contractual frequency'} · Expected at maturity {holding.expectedMaturityValue ? money(holding.expectedMaturityValue, holding.currencyCode) : '—'}</p>}
+            </div><strong className={investmentStyles.value}>{holding.currentValue === null ? 'Not valued' : money(holding.currentValue, holding.currencyCode)}</strong></div>
+            {isFixedDeposit && holding.status === 'ACTIVE' && holding.maturityDate && holding.maturityDate <= localDate() && <form className={investmentStyles.subform} onSubmit={event => void recordMaturity(event, holding)}>
+              <h5>Record actual maturity payout</h5>
+              <label>Actual payout ({holding.currencyCode})<input name="actualMaturityValue" type="number" min="0.0001" step="0.0001" required /></label>
+              <label>Payout date<input name="maturityDate" type="date" min={holding.maturityDate} max={localDate()} defaultValue={holding.maturityDate} required /></label>
+              <button disabled={busy}>{busy ? 'Saving…' : 'Record payout and close'}</button>
+            </form>}
+            {holding.status === 'ACTIVE' && <div className={investmentStyles.forms}>
+              <form className={investmentStyles.subform} onSubmit={event => void recordTransaction(event, holding)}>
+                <h5>Record transaction</h5>
+                <label>Type<select name="type" defaultValue={isFixedDeposit ? 'INTEREST' : 'BUY'}>{transactionTypes.filter(([value]) => !isFixedDeposit || ['INTEREST', 'FEE', 'TAX'].includes(value)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label>Amount ({holding.currencyCode})<input name="amount" type="number" min="0.0001" step="0.0001" required /></label>
+                {!isFixedDeposit && <label>Units <span className={investmentStyles.optional}>(required for buys/sells)</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" /></label>}
+                <label>Date<input name="transactionDate" type="date" min={holding.startDate} max={localDate()} defaultValue={localDate()} required /></label>
+                <label>Description <span className={investmentStyles.optional}>(optional)</span><input name="description" maxLength={240} /></label>
+                <button disabled={busy}>{busy ? 'Saving…' : 'Record transaction'}</button>
+              </form>
+              {!isFixedDeposit && <form className={investmentStyles.subform} onSubmit={event => void recordValuation(event, holding)}>
+                <h5>Save a valuation</h5>
+                <label>Method<select name="method" defaultValue="MANUAL"><option value="MANUAL">Manual market value</option><option value="QUANTITY_X_PRICE">Units × unit price</option></select></label>
+                <label>Valuation date<input name="valuationDate" type="date" min={holding.startDate} max={localDate()} defaultValue={localDate()} required /></label>
+                <label>Manual market value ({holding.currencyCode})<input name="marketValue" type="number" min="0" step="0.0001" /></label>
+                <label>Unit price ({holding.currencyCode})<input name="unitPrice" type="number" min="0.00000001" step="0.00000001" /></label>
+                <p className={investmentStyles.hint}>Only the selected method’s value is sent. Quantity × price uses the units held on the valuation date.</p>
+                <button disabled={busy}>{busy ? 'Saving…' : 'Save valuation'}</button>
+              </form>}
+            </div>}
+            {holding.transactions.length > 0 && <div className={investmentStyles.history}><strong>Transaction history</strong><ul className={investmentStyles.transactions}>{holding.transactions.map(transaction => <li key={transaction.id}><div><strong>{transaction.type}{transaction.quantity ? ` · ${transaction.quantity} units` : ''}</strong><span>{transaction.transactionDate}{transaction.description ? ` · ${transaction.description}` : ''}</span></div><strong className={['BUY', 'CONTRIBUTION', 'DIVIDEND', 'INTEREST'].includes(transaction.type) ? investmentStyles.positive : investmentStyles.negative}>{money(transaction.amount, holding.currencyCode)}</strong></li>)}</ul></div>}
+            {holding.valuations.length > 0 && <div className={investmentStyles.history}><strong>Valuation history</strong><ul className={investmentStyles.valuations}>{holding.valuations.map(valuation => <li key={valuation.id}><div><strong>{valuation.method === 'CONTRACTUAL' ? 'Contract start value' : valuation.method === 'QUANTITY_X_PRICE' ? `Unit price ${valuation.unitPrice}` : 'Manual value'}</strong><span>{valuation.valuationDate} · {valuation.method.replaceAll('_', ' ').toLowerCase()}</span></div><strong>{money(valuation.marketValue, valuation.currencyCode)}</strong></li>)}</ul></div>}
+          </article>;
+        })}</div>}
       </article>)}</div>}
     </section>
   </section></main>;

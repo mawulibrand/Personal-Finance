@@ -188,6 +188,51 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   const netWorthHistory = await request(netWorthPath, undefined, login.cookie);
   assert.equal(netWorthHistory.body.snapshots.length, 1);
   assert.equal(netWorthHistory.body.snapshots[0].snapshotDate, receivedDate);
+  const investmentsPath = `spaces/${spaces.body[0].id}/investments`;
+  assert.equal((await request(investmentsPath)).status, 401);
+  const investmentAccount = await request(`spaces/${spaces.body[0].id}/investment-accounts`, {
+    name: 'Test brokerage', provider: 'Test provider', currencyCode: 'GHS',
+  }, login.cookie);
+  assert.equal(investmentAccount.status, 201);
+  const investment = await request(`spaces/${spaces.body[0].id}/investment-accounts/${investmentAccount.body.id}/investments`, {
+    type: 'STOCK', name: 'Test shares', costBasis: '100', quantity: '10', startDate: receivedDate,
+  }, login.cookie);
+  assert.equal(investment.status, 201);
+  assert.equal((await request(`${investmentsPath}/${investment.body.id}/valuations`, { method: 'QUANTITY_X_PRICE', valuationDate: receivedDate, unitPrice: '12' }, login.cookie)).status, 201);
+  let portfolio = await request(investmentsPath, undefined, login.cookie);
+  let shares = portfolio.body.accounts[0].investments.find(item => item.id === investment.body.id);
+  assert.equal(shares.quantity, '10');
+  assert.equal(shares.currentValue, '120.0000');
+  assert.equal((await request(`${investmentsPath}/${investment.body.id}/transactions`, { type: 'SELL', amount: '24', quantity: '2', transactionDate: receivedDate }, login.cookie)).status, 201);
+  assert.equal((await request(`${investmentsPath}/${investment.body.id}/transactions`, { type: 'SELL', amount: '200', quantity: '20', transactionDate: receivedDate }, login.cookie)).status, 400);
+  assert.equal((await request(`${investmentsPath}/${investment.body.id}/valuations`, { method: 'MANUAL', valuationDate: receivedDate, marketValue: '97' }, login.cookie)).status, 201);
+  portfolio = await request(investmentsPath, undefined, login.cookie);
+  shares = portfolio.body.accounts[0].investments.find(item => item.id === investment.body.id);
+  assert.equal(shares.quantity, '8');
+  assert.equal(shares.currentValue, '97');
+  assert.equal(shares.valuations.length, 2);
+  const oneYearAgo = new Date(now.getTime() - 365 * 86400000).toISOString().slice(0, 10);
+  const fixedDeposit = await request(`spaces/${spaces.body[0].id}/investment-accounts/${investmentAccount.body.id}/investments`, {
+    type: 'FIXED_DEPOSIT', name: 'Matured test deposit', costBasis: '1000', startDate: oneYearAgo, maturityDate: receivedDate,
+    annualInterestRate: '10', interestMethod: 'SIMPLE', compoundingFrequency: 1,
+  }, login.cookie);
+  assert.equal(fixedDeposit.status, 201);
+  assert.equal(fixedDeposit.body.expectedMaturityValue, '1100');
+  portfolio = await request(investmentsPath, undefined, login.cookie);
+  const depositBeforePayout = portfolio.body.accounts[0].investments.find(item => item.id === fixedDeposit.body.id);
+  assert.equal(depositBeforePayout.valuations.length, 2);
+  assert.equal(depositBeforePayout.valuations[0].method, 'CONTRACTUAL');
+  assert.equal(depositBeforePayout.valuations[0].marketValue, '1100');
+  assert.equal((await request(`${investmentsPath}/${fixedDeposit.body.id}/maturity`, { actualMaturityValue: '1095', maturityDate: receivedDate }, login.cookie)).status, 201);
+  portfolio = await request(investmentsPath, undefined, login.cookie);
+  const maturedDeposit = portfolio.body.accounts[0].investments.find(item => item.id === fixedDeposit.body.id);
+  assert.equal(maturedDeposit.status, 'CLOSED');
+  assert.equal(maturedDeposit.actualMaturityValue, '1095');
+  assert.equal(maturedDeposit.currentValue, '0');
+  assert.equal(maturedDeposit.valuations.length, 3);
+  assert.equal((await request(`${investmentsPath}/${fixedDeposit.body.id}/maturity`, { actualMaturityValue: '1095', maturityDate: receivedDate }, login.cookie)).status, 400);
+  const netWorthWithInvestments = await request(netWorthPath, undefined, login.cookie);
+  assert.equal(netWorthWithInvestments.body.current.find(item => item.currencyCode === 'GHS').assets, '127.25');
   const paydayPath = `spaces/${spaces.body[0].id}/payday-routines`;
   assert.equal((await request(paydayPath)).status, 401);
   const routineSalary = await request(incomePath, {
@@ -303,6 +348,8 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(netWorthPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(paydayPath, undefined, bob.cookie)).status, 404);
   const bobSpaces = await request('spaces', undefined, bob.cookie);
+  assert.equal((await request(investmentsPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(`spaces/${bobSpaces.body[0].id}/investment-accounts/${investmentAccount.body.id}/investments`, { type: 'STOCK', name: 'Private', costBasis: '1', startDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/savings-accounts/${savingsAccount.body.id}/transactions`, { type: 'DEPOSIT', amount: '1', transactionDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/liabilities/${liability.body.id}/payments`, { amount: '1', paidAt: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/goals/${goal.body.id}/contributions`, { type: 'CONTRIBUTION', amount: '1', contributionDate: receivedDate }, bob.cookie)).status, 404);
