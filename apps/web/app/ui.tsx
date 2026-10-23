@@ -10,6 +10,9 @@ import recurringStyles from './recurring.module.css';
 import budgetStyles from './budgets.module.css';
 import savingsStyles from './savings.module.css';
 import liabilityStyles from './liabilities.module.css';
+import goalStyles from './goals.module.css';
+import netWorthStyles from './net-worth.module.css';
+import paydayStyles from './payday.module.css';
 export async function api(path: string, body?: unknown) {
   const response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   const result = await response.json().catch(() => ({ message: 'The service is unavailable. Please try again.' }));
@@ -72,6 +75,9 @@ const workspaceLinks = [
   { href: '/income', label: 'Income' },
   { href: '/expenses', label: 'Expenses' },
   { href: '/savings', label: 'Savings' },
+  { href: '/goals', label: 'Goals' },
+  { href: '/net-worth', label: 'Net worth' },
+  { href: '/payday', label: 'Payday routine' },
   { href: '/liabilities', label: 'Liabilities' },
   { href: '/recurring', label: 'Recurring' },
   { href: '/budgets', label: 'Budgets' },
@@ -316,7 +322,7 @@ export function Income() {
     finally { setBusy(false); }
   }
   return <main className="dashboard"><header><Link className="brand" href="/dashboard">Personal Finance</Link><Link className="text-button" href="/dashboard">Back to dashboard</Link></header>
-    <section className={incomeStyles.page}><p className="eyebrow">PERSONAL SPACE</p><h1>Income</h1><p className="muted">Track income sources and confirm salary only when it reaches you. Flexible payday dates stay open until the final possible date passes.</p>
+    <section className={incomeStyles.page}><p className="eyebrow">PERSONAL SPACE</p><h1>Income</h1><p className="muted">Track income sources and confirm salary only when it reaches you. Flexible payday dates stay open until the final possible date passes.</p><p><Link className={styles.categoryLink} href="/payday">Set up your payday routine →</Link></p>
       {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
       <section className={incomeStyles.panel}><h2>Add an income source</h2><form className={incomeStyles.form} onSubmit={createSource}>
         <label>Source name<input name="name" required maxLength={100} placeholder="e.g. Main employer" /></label>
@@ -790,6 +796,350 @@ export function Liabilities() {
           </li>)}</ul>}
         </article>)}</div>
       </>}
+    </section>
+  </section></main>;
+}
+
+type GoalContribution = {
+  id: string;
+  type: 'CONTRIBUTION' | 'WITHDRAWAL';
+  amount: string;
+  contributionDate: string;
+  description: string | null;
+};
+type FinancialGoal = {
+  id: string;
+  name: string;
+  description: string | null;
+  currencyCode: string;
+  targetAmount: string;
+  currentAmount: string;
+  remainingAmount: string;
+  progressPercent: number;
+  targetDate: string | null;
+  isCompleted: boolean;
+  contributions: GoalContribution[];
+};
+export function Goals() {
+  const [spaceId, setSpaceId] = useState('');
+  const [goals, setGoals] = useState<FinancialGoal[] | null>(null);
+  const [baseCurrency, setBaseCurrency] = useState('GHS');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/goals`);
+      if (active) { setSpaceId(spaces[0].id); setBaseCurrency(spaces[0].baseCurrency); setGoals(result.goals); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load financial goals.'); }
+  })(); return () => { active = false; }; }, []);
+  async function reload() {
+    if (!spaceId) return;
+    const result = await api(`spaces/${spaceId}/goals`);
+    setGoals(result.goals);
+  }
+  function money(value: string, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)); }
+    catch { return `${currency} ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value))}`; }
+  }
+  async function createGoal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      name: String(form.get('name') ?? '').trim(),
+      targetAmount: String(form.get('targetAmount') ?? '').trim(),
+      currencyCode: String(form.get('currencyCode') ?? baseCurrency).trim().toUpperCase(),
+    };
+    const description = String(form.get('description') ?? '').trim();
+    const targetDate = String(form.get('targetDate') ?? '').trim();
+    if (description) payload.description = description;
+    if (targetDate) payload.targetDate = targetDate;
+    try { await api(`spaces/${spaceId}/goals`, payload); await reload(); formElement.reset(); setMessage('Financial goal created.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this goal.'); }
+    finally { setBusy(false); }
+  }
+  async function recordContribution(event: FormEvent<HTMLFormElement>, goal: FinancialGoal) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      type: String(form.get('type') ?? 'CONTRIBUTION'),
+      amount: String(form.get('amount') ?? '').trim(),
+      contributionDate: String(form.get('contributionDate') ?? ''),
+    };
+    const description = String(form.get('description') ?? '').trim();
+    if (description) payload.description = description;
+    try {
+      await api(`spaces/${spaceId}/goals/${goal.id}/contributions`, payload);
+      await reload(); formElement.reset(); setMessage(payload.type === 'CONTRIBUTION' ? 'Goal contribution recorded.' : 'Goal withdrawal recorded.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to update this goal.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="dashboard"><section className={`${goalStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PERSONAL SPACE</p><h1>Financial goals</h1><p className="muted">Set targets and track your progress with dated contributions. These are tracking entries only; they do not move money between accounts.</p>
+    {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
+    <section className={goalStyles.panel}><h2>Create a goal</h2><form className={goalStyles.goalForm} onSubmit={createGoal}>
+      <label>Goal name<input name="name" required maxLength={100} placeholder="e.g. Emergency fund" /></label>
+      <label>Target amount<input name="targetAmount" type="number" min="0.0001" step="0.0001" required /></label>
+      <label>Currency<input name="currencyCode" required minLength={3} maxLength={3} pattern="[A-Za-z]{3}" defaultValue={baseCurrency} /></label>
+      <label>Target date <span className={goalStyles.optional}>(optional)</span><input name="targetDate" type="date" /></label>
+      <label className={goalStyles.fullWidth}>Description <span className={goalStyles.optional}>(optional)</span><input name="description" maxLength={500} placeholder="What are you saving for?" /></label>
+      <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Create goal'} <span aria-hidden="true">→</span></button>
+    </form></section>
+    <section className={goalStyles.panel}>
+      <div className={goalStyles.summaryHeading}><div><p className="eyebrow">YOUR TARGETS</p><h2>Progress</h2></div></div>
+      {goals === null ? <p role="status">Loading goals…</p> : goals.length === 0 ? <p className="muted">No goals yet. Create a target above to start tracking progress.</p> : <div className={goalStyles.goals}>{goals.map(goal => <article className={goalStyles.goal} key={goal.id}>
+        <div className={goalStyles.goalHeading}><div><span className="eyebrow">{goal.currencyCode}{goal.targetDate ? ` · TARGET ${goal.targetDate}` : ''}</span><h3>{goal.name}</h3>{goal.description && <p className="muted">{goal.description}</p>}</div><span className="tag">{goal.isCompleted ? 'COMPLETED' : 'IN PROGRESS'}</span></div>
+        <div className={goalStyles.progressSummary}><strong>{money(goal.currentAmount, goal.currencyCode)}</strong><span>of {money(goal.targetAmount, goal.currencyCode)}</span><span>{money(goal.remainingAmount, goal.currencyCode)} remaining</span></div>
+        <progress value={goal.progressPercent} max="100" aria-label={`${goal.name} progress`} />
+        {!goal.isCompleted && <form className={goalStyles.contributionForm} onSubmit={event => void recordContribution(event, goal)}>
+          <label>Entry<select name="type" defaultValue="CONTRIBUTION"><option value="CONTRIBUTION">Contribution</option><option value="WITHDRAWAL">Withdrawal</option></select></label>
+          <label>Amount ({goal.currencyCode})<input name="amount" type="number" min="0.0001" step="0.0001" required /></label>
+          <label>Date<input name="contributionDate" type="date" defaultValue={localDate()} max={localDate()} required /></label>
+          <label>Description <span className={goalStyles.optional}>(optional)</span><input name="description" maxLength={240} placeholder="Add a note" /></label>
+          <button disabled={busy}>{busy ? 'Saving…' : 'Record entry'}</button>
+        </form>}
+        <div className={goalStyles.activityHeading}><h4>Recent activity</h4></div>
+        {goal.contributions.length === 0 ? <p className="muted">No contributions recorded yet.</p> : <ul className={goalStyles.contributions}>{goal.contributions.map(item => <li key={item.id}>
+          <div><strong>{item.type === 'CONTRIBUTION' ? 'Contribution' : 'Withdrawal'} · {item.contributionDate}</strong>{item.description && <span>{item.description}</span>}</div>
+          <strong className={item.type === 'CONTRIBUTION' ? goalStyles.addition : goalStyles.removal}>{item.type === 'CONTRIBUTION' ? '+' : '−'}{money(item.amount, goal.currencyCode)}</strong>
+        </li>)}</ul>}
+      </article>)}</div>}
+    </section>
+  </section></main>;
+}
+
+type NetWorthCurrency = { currencyCode: string; assets: string; liabilities: string; netWorth: string };
+type NetWorthSnapshot = { id: string; snapshotDate: string; currencies: NetWorthCurrency[] };
+type NetWorthOverview = {
+  snapshotDate: string;
+  baseCurrency: string;
+  current: NetWorthCurrency[];
+  snapshots: NetWorthSnapshot[];
+};
+export function NetWorth() {
+  const [spaceId, setSpaceId] = useState('');
+  const [data, setData] = useState<NetWorthOverview | null>(null);
+  const [snapshotDate, setSnapshotDate] = useState(localDate());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const result = await api(`spaces/${spaces[0].id}/net-worth`);
+      if (active) { setSpaceId(spaces[0].id); setData(result); setSnapshotDate(result.snapshotDate); }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load net worth.'); }
+  })(); return () => { active = false; }; }, []);
+  async function reload() {
+    if (spaceId) setData(await api(`spaces/${spaceId}/net-worth`));
+  }
+  function money(value: string, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)); }
+    catch { return `${currency} ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value))}`; }
+  }
+  async function createSnapshot(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${spaceId}/net-worth/snapshots`, { snapshotDate });
+      await reload(); setMessage(`Snapshot saved for ${snapshotDate}.`);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this snapshot.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="dashboard"><section className={`${netWorthStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PERSONAL SPACE · {data?.baseCurrency ?? 'GHS'}</p><h1>Net worth</h1>
+    <p className="muted">Your tracked savings minus outstanding debt principal. Values stay separated by currency; no exchange-rate conversion is applied. Cash, property, and investments are not included yet.</p>
+    {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
+    <section className={netWorthStyles.panel}>
+      <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">CURRENT POSITION</p><h2>As of {data?.snapshotDate ?? '—'}</h2></div></div>
+      {!data ? <p role="status">Loading net worth…</p> : data.current.length === 0 ? <p className="muted">No tracked assets or liabilities yet. Add a savings account or liability to begin.</p> : <div className={netWorthStyles.currencies}>{data.current.map(item => <article className={netWorthStyles.currency} key={item.currencyCode}>
+        <h3>{item.currencyCode}</h3><dl><div><dt>Tracked assets</dt><dd>{money(item.assets, item.currencyCode)}</dd></div><div><dt>Liabilities</dt><dd>{money(item.liabilities, item.currencyCode)}</dd></div><div className={netWorthStyles.net}><dt>Net worth</dt><dd>{money(item.netWorth, item.currencyCode)}</dd></div></dl>
+      </article>)}</div>}
+    </section>
+    <section className={netWorthStyles.panel}>
+      <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">HISTORY</p><h2>Save a snapshot</h2></div></div>
+      <p className="muted">Snapshots are calculated from savings and liability entries on the selected date and are preserved as recorded. Only one snapshot can be saved per day.</p>
+      <form className={netWorthStyles.snapshotForm} onSubmit={event => void createSnapshot(event)}>
+        <label>Snapshot date<input type="date" value={snapshotDate} onChange={event => setSnapshotDate(event.target.value)} max={data?.snapshotDate ?? localDate()} required /></label>
+        <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Save snapshot'}</button>
+      </form>
+    </section>
+    <section className={netWorthStyles.panel}>
+      <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">SAVED RECORDS</p><h2>Snapshot history</h2></div></div>
+      {!data ? <p role="status">Loading history…</p> : data.snapshots.length === 0 ? <p className="muted">No snapshots saved yet.</p> : <div className={netWorthStyles.history}>{data.snapshots.map(snapshot => <article className={netWorthStyles.snapshot} key={snapshot.id}>
+        <h3>{snapshot.snapshotDate}</h3><div className={netWorthStyles.currencies}>{snapshot.currencies.map(item => <dl key={item.currencyCode}><dt>{item.currencyCode} net worth</dt><dd>{money(item.netWorth, item.currencyCode)}</dd><dt>Assets</dt><dd>{money(item.assets, item.currencyCode)}</dd><dt>Liabilities</dt><dd>{money(item.liabilities, item.currencyCode)}</dd></dl>)}</div>
+      </article>)}</div>}
+    </section>
+  </section></main>;
+}
+
+type PaydayActionType = 'SAVINGS_DEPOSIT' | 'GOAL_CONTRIBUTION' | 'LIABILITY_PAYMENT';
+type PaydayActionStatus = 'DUE' | 'PARTIALLY_COMPLETED' | 'COMPLETED' | 'SKIPPED';
+type PaydayTarget = { id: string; name: string; currencyCode: string };
+type PaydayRoutineAction = {
+  id: string;
+  source: PaydayTarget;
+  type: PaydayActionType;
+  name: string;
+  plannedAmount: string;
+  isActive: boolean;
+  target: PaydayTarget;
+};
+type PaydayRoutineEntry = {
+  id: string;
+  type: PaydayActionType;
+  name: string;
+  source: PaydayTarget;
+  target: PaydayTarget;
+  plannedAmount: string;
+  completedAmount: string;
+  remainingAmount: string;
+  status: PaydayActionStatus;
+  salary: { amount: string; receivedDate: string; periodYear: number | null; periodMonth: number | null };
+};
+const paydayActionLabels: Record<PaydayActionType, string> = {
+  SAVINGS_DEPOSIT: 'Savings deposit',
+  GOAL_CONTRIBUTION: 'Goal contribution',
+  LIABILITY_PAYMENT: 'Debt repayment',
+};
+const paydayActionStatusLabels: Record<PaydayActionStatus, string> = {
+  DUE: 'DUE',
+  PARTIALLY_COMPLETED: 'PARTIALLY COMPLETED',
+  COMPLETED: 'COMPLETED',
+  SKIPPED: 'SKIPPED',
+};
+export function PaydayRoutines() {
+  const [spaceId, setSpaceId] = useState('');
+  const [sources, setSources] = useState<PaydayTarget[]>([]);
+  const [routineSourceId, setRoutineSourceId] = useState('');
+  const [savings, setSavings] = useState<PaydayTarget[]>([]);
+  const [goals, setGoals] = useState<PaydayTarget[]>([]);
+  const [liabilities, setLiabilities] = useState<PaydayTarget[]>([]);
+  const [actions, setActions] = useState<PaydayRoutineAction[]>([]);
+  const [entries, setEntries] = useState<PaydayRoutineEntry[]>([]);
+  const [actionType, setActionType] = useState<PaydayActionType>('SAVINGS_DEPOSIT');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => { let active = true; (async () => {
+    try {
+      const spaces = await api('spaces');
+      if (!spaces[0]) throw new Error('No financial space is available.');
+      const id = spaces[0].id;
+      const [incomeSources, savingsOverview, goalOverview, liabilityOverview, routineData] = await Promise.all([
+        api(`spaces/${id}/income-sources`),
+        api(`spaces/${id}/savings-accounts`),
+        api(`spaces/${id}/goals`),
+        api(`spaces/${id}/liabilities`),
+        api(`spaces/${id}/payday-routines`),
+      ]);
+      if (active) {
+        setSpaceId(id);
+        const salarySources = incomeSources.filter((source: { type: IncomeSourceType }) => source.type === 'SALARY');
+        setSources(salarySources);
+        setRoutineSourceId(salarySources[0]?.id ?? '');
+        setSavings(savingsOverview.accounts);
+        setGoals(goalOverview.goals);
+        setLiabilities(liabilityOverview.liabilities.filter((liability: { status: string }) => liability.status === 'ACTIVE'));
+        setActions(routineData.actions);
+        setEntries(routineData.entries);
+      }
+    } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load payday routines.'); }
+  })(); return () => { active = false; }; }, []);
+  async function reload() {
+    if (!spaceId) return;
+    const result = await api(`spaces/${spaceId}/payday-routines`);
+    setActions(result.actions); setEntries(result.entries);
+  }
+  function money(value: string, currency: string) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value)); }
+    catch { return `${currency} ${new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(value))}`; }
+  }
+  const selectedTargets = actionType === 'SAVINGS_DEPOSIT' ? savings : actionType === 'GOAL_CONTRIBUTION' ? goals : liabilities;
+  const routineCurrency = sources.find(source => source.id === routineSourceId)?.currencyCode.trim();
+  const compatibleTargets = selectedTargets.filter(target => target.currencyCode.trim() === routineCurrency);
+  async function createAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await api(`spaces/${spaceId}/payday-routines`, {
+        sourceId: String(form.get('sourceId') ?? ''),
+        type: actionType,
+        name: String(form.get('name') ?? '').trim(),
+        plannedAmount: String(form.get('plannedAmount') ?? '').trim(),
+        targetId: String(form.get('targetId') ?? ''),
+      });
+      await reload(); formElement.reset(); setMessage('Payday routine action added.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this routine action.'); }
+    finally { setBusy(false); }
+  }
+  async function completeAction(event: FormEvent<HTMLFormElement>, entry: PaydayRoutineEntry) {
+    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, string> = {
+      amount: String(form.get('amount') ?? '').trim(),
+      completedDate: String(form.get('completedDate') ?? ''),
+    };
+    const principalAmount = String(form.get('principalAmount') ?? '').trim();
+    const description = String(form.get('description') ?? '').trim();
+    if (principalAmount) payload.principalAmount = principalAmount;
+    if (description) payload.description = description;
+    try {
+      const result = await api(`spaces/${spaceId}/payday-routines/${entry.id}/complete`, payload);
+      await reload(); setMessage(result.status === 'COMPLETED' ? 'Payday action completed and recorded.' : 'Partial payday action recorded.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to record this payday action.'); }
+    finally { setBusy(false); }
+  }
+  async function skipAction(entry: PaydayRoutineEntry) {
+    setBusy(true); setError(''); setMessage('');
+    try { await api(`spaces/${spaceId}/payday-routines/${entry.id}/skip`, {}); await reload(); setMessage('Payday action skipped.'); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to skip this action.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="dashboard"><section className={`${paydayStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">PERSONAL SPACE</p><h1>Payday routine</h1>
+    <p className="muted">Plan what you intend to do after salary arrives. This app never moves money; confirm only actions you have already completed externally. Routine entries are created when you confirm a salary.</p>
+    {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
+    <section className={paydayStyles.panel}><h2>Plan a payday action</h2>
+      {sources.length === 0 ? <p className="muted">Add a salary source with payday dates on the <Link href="/income">Income page</Link> to configure a routine.</p> : <form className={paydayStyles.form} onSubmit={createAction}>
+        <label>Salary source<select name="sourceId" required value={routineSourceId} onChange={event => setRoutineSourceId(event.target.value)}><option value="" disabled>Choose salary source</option>{sources.map(source => <option key={source.id} value={source.id}>{source.name} · {source.currencyCode}</option>)}</select></label>
+        <label>Action type<select value={actionType} onChange={event => setActionType(event.target.value as PaydayActionType)}>{Object.entries(paydayActionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label>Action name<input name="name" required maxLength={100} placeholder="e.g. Monthly emergency fund" /></label>
+        <label>Planned amount<input name="plannedAmount" type="number" min="0.0001" step="0.0001" required /></label>
+        <label>Destination<select name="targetId" required defaultValue=""><option value="" disabled>Choose destination</option>{compatibleTargets.map(target => <option key={target.id} value={target.id}>{target.name} · {target.currencyCode}</option>)}</select></label>
+        <p className={paydayStyles.hint}>Choose a destination in the same currency as the salary source. You can configure fixed planned amounts; actions are not automatically deducted from salary.</p>
+        <button disabled={busy || !spaceId || compatibleTargets.length === 0}>{busy ? 'Saving…' : 'Add routine action'}</button>
+      </form>}
+    </section>
+    <section className={paydayStyles.panel}><div className={paydayStyles.sectionHeading}><div><p className="eyebrow">REUSABLE PLAN</p><h2>Your planned actions</h2></div></div>
+      {actions.length === 0 ? <p className="muted">No payday actions configured. Add savings, goal, or debt actions above.</p> : <ul className={paydayStyles.actionList}>{actions.map(action => <li key={action.id}><div><strong>{action.name} {!action.isActive && <span>(paused)</span>}</strong><span>{action.source.name} → {paydayActionLabels[action.type]}: {action.target.name}</span></div><div className={paydayStyles.actionControls}><strong>{money(action.plannedAmount, action.source.currencyCode)}</strong><button type="button" className={paydayStyles.skip} disabled={busy} onClick={async () => {
+        setBusy(true); setError(''); setMessage('');
+        try { await api(`spaces/${spaceId}/payday-routines/${action.id}/status`, { isActive: !action.isActive }); await reload(); setMessage(action.isActive ? 'Payday action paused.' : 'Payday action activated.'); }
+        catch (e) { setError(e instanceof Error ? e.message : 'Unable to update this routine.'); }
+        finally { setBusy(false); }
+      }}>{action.isActive ? 'Pause' : 'Activate'}</button></div></li>)}</ul>}
+    </section>
+    <section className={paydayStyles.panel}><div className={paydayStyles.sectionHeading}><div><p className="eyebrow">AFTER SALARY CONFIRMATION</p><h2>Routine activity</h2></div></div>
+      {entries.length === 0 ? <p className="muted">No payday actions are due yet. When salary is confirmed, actions configured for that source will appear here.</p> : <div className={paydayStyles.entries}>{entries.map(entry => <article className={paydayStyles.entry} key={entry.id}>
+        <div className={paydayStyles.entryHeading}><div><span className="eyebrow">{entry.source.name} · RECEIVED {entry.salary.receivedDate}</span><h3>{entry.name}</h3><p className="muted">{paydayActionLabels[entry.type]} · {entry.target.name}</p></div><span className="tag">{paydayActionStatusLabels[entry.status]}</span></div>
+        <p className={paydayStyles.amounts}>{money(entry.completedAmount, entry.source.currencyCode)} completed of {money(entry.plannedAmount, entry.source.currencyCode)} · {money(entry.remainingAmount, entry.source.currencyCode)} remaining</p>
+        {entry.status === 'DUE' || entry.status === 'PARTIALLY_COMPLETED' ? <>
+          <p className={paydayStyles.hint}>First perform this action with your bank or provider, then record it here. Saving records the corresponding transaction in your financial tracker.</p>
+          <form className={paydayStyles.form} onSubmit={event => void completeAction(event, entry)}>
+            <label>Amount completed<input name="amount" type="number" min="0.0001" max={entry.remainingAmount} step="0.0001" defaultValue={entry.remainingAmount} required /></label>
+            <label>Completion date<input name="completedDate" type="date" min={entry.salary.receivedDate} max={localDate()} defaultValue={localDate()} required /></label>
+            {entry.type === 'LIABILITY_PAYMENT' && <label>Principal portion <span className={paydayStyles.optional}>(optional)</span><input name="principalAmount" type="number" min="0" step="0.0001" placeholder="Defaults to total payment" /></label>}
+            <label>Description <span className={paydayStyles.optional}>(optional)</span><input name="description" maxLength={240} placeholder="Add a note" /></label>
+            <div className={paydayStyles.buttons}><button disabled={busy}>{busy ? 'Saving…' : 'Record completed action'}</button><button className={paydayStyles.skip} type="button" disabled={busy} onClick={() => void skipAction(entry)}>Skip</button></div>
+          </form>
+        </> : null}
+      </article>)}</div>}
     </section>
   </section></main>;
 }

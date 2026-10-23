@@ -13,7 +13,7 @@ import { hashPassword, verifyPassword, newToken, hashToken, mayAccessPersonalSpa
 import { DEFAULT_CATEGORIES, normalizeCategoryName } from './categories.js';
 import { expectedPaydayDates, salaryPeriodStatus } from './income.js';
 import { nextRecurringDate } from './recurring.js';
-import { addDecimals, decimalToUnits, subtractDecimals } from './money.js';
+import { addDecimals, decimalToUnits, subtractDecimals, unitsToDecimal } from './money.js';
 
 const required = (name: string) => { const value = process.env[name]; if (!value) throw new Error(`Missing ${name}`); return value; };
 const helmetExport: unknown = createRequire(import.meta.url)('helmet');
@@ -101,6 +101,33 @@ const liabilityPaymentInput = z.object({
   paidAt: dateOnly,
   description: z.string().trim().max(240).optional().transform(value => value || undefined),
 }).strict();
+const financialGoalInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  description: z.string().trim().max(500).optional().transform(value => value || undefined),
+  currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  targetAmount: amount,
+  targetDate: dateOnly.optional(),
+}).strict();
+const goalContributionInput = z.object({
+  type: z.enum(['CONTRIBUTION', 'WITHDRAWAL']),
+  amount,
+  contributionDate: dateOnly,
+  description: z.string().trim().max(240).optional().transform(value => value || undefined),
+}).strict();
+const snapshotInput = z.object({ snapshotDate: dateOnly.optional() }).strict();
+const paydayRoutineActionInput = z.object({
+  sourceId: z.string().uuid(),
+  type: z.enum(['SAVINGS_DEPOSIT', 'GOAL_CONTRIBUTION', 'LIABILITY_PAYMENT']),
+  name: z.string().trim().min(1).max(100),
+  plannedAmount: amount,
+  targetId: z.string().uuid(),
+}).strict();
+const paydayRoutineCompletionInput = z.object({
+  amount,
+  completedDate: dateOnly,
+  principalAmount: nonNegativeAmount.optional(),
+  description: z.string().trim().max(240).optional().transform(value => value || undefined),
+}).strict();
 const recurringInput = z.object({
   name: z.string().trim().min(1).max(100),
   flow: z.enum(['INCOME', 'EXPENSE']),
@@ -131,6 +158,48 @@ function validate<T>(schema: z.ZodType<T>, input: unknown): T {
 }
 const safeUser = (u: { id: string; name: string; email: string }) => ({ id: u.id, name: u.name, email: u.email });
 const toDateOnly = (date: Date) => date.toISOString().slice(0, 10);
+async function calculateNetWorth(spaceId: string, snapshotDate: Date, baseCurrency: string) {
+  const [accounts, liabilities] = await Promise.all([
+    db.savingsAccount.findMany({
+      where: { spaceId, openedAt: { lte: snapshotDate } },
+      include: { transactions: { where: { transactionDate: { lte: snapshotDate } } } },
+    }),
+    db.liability.findMany({
+      where: { spaceId, startDate: { lte: snapshotDate } },
+      include: { payments: { where: { paidAt: { lte: snapshotDate } } } },
+    }),
+  ]);
+  const totals = new Map<string, { assets: string; liabilities: string }>();
+  const forCurrency = (currencyCode: string) => {
+    const currency = currencyCode.trim();
+    let totalsForCurrency = totals.get(currency);
+    if (!totalsForCurrency) {
+      totalsForCurrency = { assets: '0', liabilities: '0' };
+      totals.set(currency, totalsForCurrency);
+    }
+    return totalsForCurrency;
+  };
+  forCurrency(baseCurrency);
+  for (const account of accounts) {
+    const currency = forCurrency(account.currencyCode);
+    const deposits = account.transactions.filter(item => item.type === 'DEPOSIT').map(item => item.amount.toString());
+    const withdrawals = account.transactions.filter(item => item.type === 'WITHDRAWAL').map(item => item.amount.toString());
+    currency.assets = addDecimals(currency.assets, account.openingBalance.toString(), ...deposits);
+    currency.assets = subtractDecimals(currency.assets, addDecimals(...withdrawals));
+  }
+  for (const liability of liabilities) {
+    const currency = forCurrency(liability.currencyCode);
+    const principalPaid = addDecimals(...liability.payments.map(payment => payment.principalAmount.toString()));
+    const outstanding = subtractDecimals(liability.openingBalance.toString(), principalPaid);
+    currency.liabilities = addDecimals(currency.liabilities, outstanding);
+  }
+  return [...totals.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currencyCode, totalsForCurrency]) => ({
+    currencyCode,
+    assets: totalsForCurrency.assets,
+    liabilities: totalsForCurrency.liabilities,
+    netWorth: subtractDecimals(totalsForCurrency.assets, totalsForCurrency.liabilities),
+  }));
+}
 function setSession(res: Response, token: string) {
   res.cookie('pf_session', token, { httpOnly: true, secure: production, sameSite: 'lax', path: '/', maxAge: 7 * 86400000 });
 }
@@ -244,6 +313,74 @@ class Api {
     const user = await this.identity.user(req);
     const memberships = await db.membership.findMany({ where: { userId: user.id }, include: { space: true } });
     return memberships.filter(m => m.space.type !== 'PERSONAL' || mayAccessPersonalSpace(user.id, m.space.personalOwnerId)).map(m => ({ ...m.space, role: m.role }));
+  }
+  @Get('spaces/:id/net-worth') async netWorth(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const snapshotDate = new Date(`${toDateOnly(new Date())}T00:00:00.000Z`);
+    const [current, snapshots] = await Promise.all([
+      calculateNetWorth(membership.spaceId, snapshotDate, membership.space.baseCurrency),
+      db.netWorthSnapshot.findMany({
+        where: { spaceId: membership.spaceId },
+        include: { currencies: { orderBy: { currencyCode: 'asc' } } },
+        orderBy: { snapshotDate: 'desc' },
+        take: 24,
+      }),
+    ]);
+    return {
+      snapshotDate: toDateOnly(snapshotDate),
+      baseCurrency: membership.space.baseCurrency.trim(),
+      current,
+      snapshots: snapshots.map(snapshot => ({
+        id: snapshot.id,
+        snapshotDate: toDateOnly(snapshot.snapshotDate),
+        currencies: snapshot.currencies.map(currency => ({
+          currencyCode: currency.currencyCode.trim(),
+          assets: currency.assets.toString(),
+          liabilities: currency.liabilities.toString(),
+          netWorth: currency.netWorth.toString(),
+        })),
+      })),
+    };
+  }
+  @Post('spaces/:id/net-worth/snapshots') async createNetWorthSnapshot(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to create net-worth snapshots in this space.');
+    const input = validate(snapshotInput, body);
+    const snapshotDate = input.snapshotDate ?? toDateOnly(new Date());
+    if (snapshotDate > toDateOnly(new Date())) throw new BadRequestException('Snapshot date cannot be in the future.');
+    const date = new Date(`${snapshotDate}T00:00:00.000Z`);
+    const currencies = await calculateNetWorth(membership.spaceId, date, membership.space.baseCurrency);
+    try {
+      return await db.$transaction(async tx => {
+        const snapshot = await tx.netWorthSnapshot.create({
+          data: {
+            spaceId: membership.spaceId,
+            snapshotDate: date,
+            createdBy: user.id,
+            currencies: { create: currencies },
+          },
+          include: { currencies: { orderBy: { currencyCode: 'asc' } } },
+        });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'NET_WORTH_SNAPSHOT_CREATED' } });
+        return {
+          id: snapshot.id,
+          snapshotDate: toDateOnly(snapshot.snapshotDate),
+          currencies: snapshot.currencies.map(currency => ({
+            currencyCode: currency.currencyCode.trim(),
+            assets: currency.assets.toString(),
+            liabilities: currency.liabilities.toString(),
+            netWorth: currency.netWorth.toString(),
+          })),
+        };
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('A net-worth snapshot already exists for this date.');
+      }
+      throw error;
+    }
   }
   @Get('spaces/:id/dashboard') async dashboard(@Req() req: Request, @Param('id') id: string, @Query('month') month?: string) {
     const user = await this.identity.user(req);
@@ -426,6 +563,14 @@ class Api {
             periodMonth: input.periodMonth,
           },
         });
+        if (source.type === 'SALARY') {
+          const actions = await tx.paydayRoutineAction.findMany({ where: { sourceId: source.id, isActive: true } });
+          if (actions.length) {
+            await tx.paydayRoutineEntry.createMany({
+              data: actions.map(action => ({ incomeRecordId: created.id, actionId: action.id, plannedAmount: action.plannedAmount })),
+            });
+          }
+        }
         await tx.auditEvent.create({
           data: { actorUserId: user.id, spaceId: membership.spaceId, action: source.type === 'SALARY' ? 'SALARY_CONFIRMED' : 'INCOME_RECORDED' },
         });
@@ -438,6 +583,207 @@ class Api {
       }
       throw error;
     }
+  }
+  @Get('spaces/:id/payday-routines') async paydayRoutines(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const [actions, entries] = await Promise.all([
+      db.paydayRoutineAction.findMany({
+        where: { spaceId: membership.spaceId },
+        include: {
+          source: { select: { id: true, name: true, currencyCode: true } },
+          savingsAccount: { select: { id: true, name: true, currencyCode: true } },
+          goal: { select: { id: true, name: true, currencyCode: true } },
+          liability: { select: { id: true, name: true, currencyCode: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+      }),
+      db.paydayRoutineEntry.findMany({
+        where: { action: { spaceId: membership.spaceId } },
+        include: {
+          action: {
+            include: {
+              source: { select: { id: true, name: true, currencyCode: true } },
+              savingsAccount: { select: { id: true, name: true, currencyCode: true } },
+              goal: { select: { id: true, name: true, currencyCode: true } },
+              liability: { select: { id: true, name: true, currencyCode: true } },
+            },
+          },
+          incomeRecord: { select: { amount: true, receivedDate: true, periodYear: true, periodMonth: true } },
+        },
+        orderBy: [{ incomeRecord: { receivedDate: 'desc' } }, { createdAt: 'desc' }],
+        take: 50,
+      }),
+    ]);
+    const serializeAction = (action: typeof actions[number]) => ({
+      id: action.id,
+      source: action.source,
+      type: action.type,
+      name: action.name,
+      plannedAmount: action.plannedAmount.toString(),
+      isActive: action.isActive,
+      target: action.savingsAccount ?? action.goal ?? action.liability,
+    });
+    return {
+      actions: actions.map(serializeAction),
+      entries: entries.map(entry => ({
+        id: entry.id,
+        type: entry.action.type,
+        name: entry.action.name,
+        source: entry.action.source,
+        target: entry.action.savingsAccount ?? entry.action.goal ?? entry.action.liability,
+        plannedAmount: entry.plannedAmount.toString(),
+        completedAmount: entry.completedAmount.toString(),
+        remainingAmount: subtractDecimals(entry.plannedAmount.toString(), entry.completedAmount.toString()),
+        status: entry.status,
+        salary: {
+          amount: entry.incomeRecord.amount.toString(),
+          receivedDate: toDateOnly(entry.incomeRecord.receivedDate),
+          periodYear: entry.incomeRecord.periodYear,
+          periodMonth: entry.incomeRecord.periodMonth,
+        },
+      })),
+    };
+  }
+  @Post('spaces/:id/payday-routines') async createPaydayRoutineAction(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage payday routines in this space.');
+    const input = validate(paydayRoutineActionInput, body);
+    const source = await db.incomeSource.findFirst({ where: { id: input.sourceId, spaceId: membership.spaceId, isActive: true } });
+    if (!source || source.type !== 'SALARY') throw new BadRequestException('Choose an active salary source for a payday routine.');
+    const targetId = validate(z.string().uuid(), input.targetId);
+    let targetCurrency: string;
+    let target: { id: string; name: string };
+    if (input.type === 'SAVINGS_DEPOSIT') {
+      const account = await db.savingsAccount.findFirst({ where: { id: targetId, spaceId: membership.spaceId }, select: { id: true, name: true, currencyCode: true } });
+      if (!account) throw new BadRequestException('Choose a savings account in this financial space.');
+      targetCurrency = account.currencyCode.trim();
+      target = { id: account.id, name: account.name };
+    } else if (input.type === 'GOAL_CONTRIBUTION') {
+      const goal = await db.financialGoal.findFirst({ where: { id: targetId, spaceId: membership.spaceId }, select: { id: true, name: true, currencyCode: true } });
+      if (!goal) throw new BadRequestException('Choose a financial goal in this financial space.');
+      targetCurrency = goal.currencyCode.trim();
+      target = { id: goal.id, name: goal.name };
+    } else {
+      const liability = await db.liability.findFirst({ where: { id: targetId, spaceId: membership.spaceId, status: 'ACTIVE' }, select: { id: true, name: true, currencyCode: true } });
+      if (!liability) throw new BadRequestException('Choose an active liability in this financial space.');
+      targetCurrency = liability.currencyCode.trim();
+      target = { id: liability.id, name: liability.name };
+    }
+    if (targetCurrency !== source.currencyCode.trim()) throw new BadRequestException('Routine and salary source currencies must match.');
+    const action = await db.$transaction(async tx => {
+      const created = await tx.paydayRoutineAction.create({
+        data: {
+          spaceId: membership.spaceId,
+          sourceId: source.id,
+          type: input.type,
+          name: input.name,
+          plannedAmount: input.plannedAmount,
+          savingsAccountId: input.type === 'SAVINGS_DEPOSIT' ? targetId : undefined,
+          goalId: input.type === 'GOAL_CONTRIBUTION' ? targetId : undefined,
+          liabilityId: input.type === 'LIABILITY_PAYMENT' ? targetId : undefined,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'PAYDAY_ROUTINE_ACTION_CREATED' } });
+      return created;
+    });
+    return { id: action.id, source: { id: source.id, name: source.name, currencyCode: source.currencyCode.trim() }, type: action.type, name: action.name, plannedAmount: action.plannedAmount.toString(), isActive: action.isActive, target };
+  }
+  @Post('spaces/:id/payday-routines/:actionId/status') async setPaydayRoutineActionStatus(@Req() req: Request, @Param('id') id: string, @Param('actionId') actionId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage payday routines in this space.');
+    const validActionId = validate(z.string().uuid(), actionId);
+    const { isActive } = validate(z.object({ isActive: z.boolean() }).strict(), body);
+    return db.$transaction(async tx => {
+      const updated = await tx.paydayRoutineAction.updateMany({
+        where: { id: validActionId, spaceId: membership.spaceId },
+        data: { isActive },
+      });
+      if (!updated.count) throw new NotFoundException();
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: isActive ? 'PAYDAY_ROUTINE_ACTION_ACTIVATED' : 'PAYDAY_ROUTINE_ACTION_DEACTIVATED' } });
+      return { id: validActionId, isActive };
+    });
+  }
+  @Post('spaces/:id/payday-routines/:entryId/complete') async completePaydayRoutineEntry(@Req() req: Request, @Param('id') id: string, @Param('entryId') entryId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to update payday routines in this space.');
+    const validEntryId = validate(z.string().uuid(), entryId);
+    const input = validate(paydayRoutineCompletionInput, body);
+    if (input.completedDate > toDateOnly(new Date())) throw new BadRequestException('Routine completion date cannot be in the future.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT entry."id" FROM "PaydayRoutineEntry" entry INNER JOIN "PaydayRoutineAction" action ON action."id" = entry."actionId" WHERE entry."id" = ${validEntryId} AND action."spaceId" = ${membership.spaceId} FOR UPDATE OF entry`;
+      const entry = await tx.paydayRoutineEntry.findFirst({
+        where: { id: validEntryId, action: { spaceId: membership.spaceId } },
+        include: {
+          action: { include: { savingsAccount: true, goal: true, liability: true } },
+          incomeRecord: { select: { receivedDate: true } },
+        },
+      });
+      if (!entry) throw new NotFoundException();
+      if (entry.status === 'COMPLETED' || entry.status === 'SKIPPED') throw new BadRequestException('This payday routine item is already closed.');
+      if (input.completedDate < toDateOnly(entry.incomeRecord.receivedDate)) throw new BadRequestException('Completion date cannot be before salary was received.');
+      const remaining = subtractDecimals(entry.plannedAmount.toString(), entry.completedAmount.toString());
+      if (decimalToUnits(input.amount) > decimalToUnits(remaining)) throw new BadRequestException('The recorded amount cannot exceed the remaining planned amount.');
+      if (entry.action.type === 'SAVINGS_DEPOSIT' && entry.action.savingsAccount) {
+        const account = entry.action.savingsAccount;
+        await tx.$queryRaw`SELECT "id" FROM "SavingsAccount" WHERE "id" = ${account.id} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+        const openedAt = toDateOnly(account.openedAt);
+        if (input.completedDate < openedAt) throw new BadRequestException('Completion date cannot be before the savings account was opened.');
+        await tx.savingsTransaction.create({
+          data: { accountId: account.id, type: 'DEPOSIT', amount: input.amount, transactionDate: new Date(`${input.completedDate}T00:00:00.000Z`), description: input.description ?? entry.action.name, createdBy: user.id },
+        });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'SAVINGS_DEPOSIT_RECORDED' } });
+      } else if (entry.action.type === 'GOAL_CONTRIBUTION' && entry.action.goal) {
+        await tx.goalContribution.create({
+          data: { goalId: entry.action.goal.id, type: 'CONTRIBUTION', amount: input.amount, contributionDate: new Date(`${input.completedDate}T00:00:00.000Z`), description: input.description ?? entry.action.name, createdBy: user.id },
+        });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'GOAL_CONTRIBUTION_RECORDED' } });
+      } else if (entry.action.type === 'LIABILITY_PAYMENT' && entry.action.liability) {
+        const liabilityId = entry.action.liability.id;
+        await tx.$queryRaw`SELECT "id" FROM "Liability" WHERE "id" = ${liabilityId} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+        const liability = await tx.liability.findFirst({ where: { id: liabilityId, spaceId: membership.spaceId } });
+        if (!liability || liability.status === 'PAID_OFF') throw new BadRequestException('This liability is no longer active.');
+        if (input.completedDate < toDateOnly(liability.startDate)) throw new BadRequestException('Completion date cannot be before the debt started.');
+        const principalAmount = input.principalAmount ?? input.amount;
+        if (decimalToUnits(principalAmount) > decimalToUnits(input.amount)) throw new BadRequestException('Principal paid cannot exceed the total payment.');
+        const principalAggregate = await tx.liabilityPayment.aggregate({ where: { liabilityId }, _sum: { principalAmount: true } });
+        const principalPaid = principalAggregate._sum.principalAmount?.toString() ?? '0';
+        const outstanding = subtractDecimals(liability.openingBalance.toString(), principalPaid);
+        if (decimalToUnits(principalAmount) > decimalToUnits(outstanding)) throw new BadRequestException('Principal paid cannot exceed the outstanding balance.');
+        const newBalance = subtractDecimals(outstanding, principalAmount);
+        await tx.liabilityPayment.create({
+          data: { liabilityId, amount: input.amount, principalAmount, paidAt: new Date(`${input.completedDate}T00:00:00.000Z`), description: input.description ?? entry.action.name, createdBy: user.id },
+        });
+        if (newBalance === '0') await tx.liability.update({ where: { id: liabilityId }, data: { status: 'PAID_OFF' } });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: newBalance === '0' ? 'LIABILITY_PAID_OFF' : 'LIABILITY_PAYMENT_RECORDED' } });
+      } else {
+        throw new BadRequestException('This payday routine target is no longer available.');
+      }
+      const completedAmount = addDecimals(entry.completedAmount.toString(), input.amount);
+      const status = decimalToUnits(completedAmount) === decimalToUnits(entry.plannedAmount.toString()) ? 'COMPLETED' : 'PARTIALLY_COMPLETED';
+      const updated = await tx.paydayRoutineEntry.update({ where: { id: entry.id }, data: { completedAmount, status } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: status === 'COMPLETED' ? 'PAYDAY_ROUTINE_ACTION_COMPLETED' : 'PAYDAY_ROUTINE_ACTION_PARTIALLY_COMPLETED' } });
+      return { id: updated.id, plannedAmount: updated.plannedAmount.toString(), completedAmount: updated.completedAmount.toString(), remainingAmount: subtractDecimals(updated.plannedAmount.toString(), updated.completedAmount.toString()), status: updated.status };
+    });
+  }
+  @Post('spaces/:id/payday-routines/:entryId/skip') async skipPaydayRoutineEntry(@Req() req: Request, @Param('id') id: string, @Param('entryId') entryId: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to update payday routines in this space.');
+    const validEntryId = validate(z.string().uuid(), entryId);
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT entry."id" FROM "PaydayRoutineEntry" entry INNER JOIN "PaydayRoutineAction" action ON action."id" = entry."actionId" WHERE entry."id" = ${validEntryId} AND action."spaceId" = ${membership.spaceId} FOR UPDATE OF entry`;
+      const entry = await tx.paydayRoutineEntry.findFirst({ where: { id: validEntryId, action: { spaceId: membership.spaceId } } });
+      if (!entry) throw new NotFoundException();
+      if (entry.status === 'COMPLETED' || entry.status === 'SKIPPED') throw new BadRequestException('This payday routine item is already closed.');
+      const updated = await tx.paydayRoutineEntry.update({ where: { id: entry.id }, data: { status: 'SKIPPED' } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'PAYDAY_ROUTINE_ACTION_SKIPPED' } });
+      return { id: updated.id, status: updated.status, completedAmount: updated.completedAmount.toString(), plannedAmount: updated.plannedAmount.toString() };
+    });
   }
   @Get('spaces/:id/recurring-records') async recurringRecords(@Req() req: Request, @Param('id') id: string) {
     const user = await this.identity.user(req);
@@ -783,6 +1129,142 @@ class Api {
         currencyCode: account.currencyCode.trim(),
         transactionDate: toDateOnly(transaction.transactionDate),
         description: transaction.description,
+      };
+    });
+  }
+  @Get('spaces/:id/goals') async goals(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    const goals = await db.financialGoal.findMany({
+      where: { spaceId: membership.spaceId },
+      include: { contributions: { orderBy: [{ contributionDate: 'desc' }, { createdAt: 'desc' }], take: 10 } },
+      orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+    });
+    const aggregates = goals.length ? await db.goalContribution.groupBy({
+      by: ['goalId', 'type'],
+      where: { goalId: { in: goals.map(goal => goal.id) } },
+      _sum: { amount: true },
+    }) : [];
+    const aggregateAmounts = new Map(aggregates.map(item => [`${item.goalId}:${item.type}`, item._sum.amount?.toString() ?? '0']));
+    return {
+      goals: goals.map(goal => {
+        const currencyCode = goal.currencyCode.trim();
+        const currentAmount = subtractDecimals(
+          aggregateAmounts.get(`${goal.id}:CONTRIBUTION`) ?? '0',
+          aggregateAmounts.get(`${goal.id}:WITHDRAWAL`) ?? '0',
+        );
+        const completed = decimalToUnits(currentAmount) >= decimalToUnits(goal.targetAmount.toString());
+        const ratio = Number(currentAmount) / Number(goal.targetAmount.toString());
+        return {
+          id: goal.id,
+          name: goal.name,
+          description: goal.description,
+          currencyCode,
+          targetAmount: goal.targetAmount.toString(),
+          currentAmount,
+          remainingAmount: completed ? '0' : subtractDecimals(goal.targetAmount.toString(), currentAmount),
+          progressPercent: Math.min(100, Math.max(0, ratio * 100)),
+          targetDate: goal.targetDate ? toDateOnly(goal.targetDate) : null,
+          isCompleted: completed,
+          contributions: goal.contributions.map(contribution => ({
+            id: contribution.id,
+            type: contribution.type,
+            amount: contribution.amount.toString(),
+            contributionDate: toDateOnly(contribution.contributionDate),
+            description: contribution.description,
+          })),
+        };
+      }),
+    };
+  }
+  @Post('spaces/:id/goals') async createGoal(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage goals in this space.');
+    const input = validate(financialGoalInput, body);
+    const goal = await db.$transaction(async tx => {
+      const created = await tx.financialGoal.create({
+        data: {
+          spaceId: membership.spaceId,
+          name: input.name,
+          description: input.description,
+          currencyCode: input.currencyCode ?? membership.space.baseCurrency,
+          targetAmount: input.targetAmount,
+          targetDate: input.targetDate ? new Date(`${input.targetDate}T00:00:00.000Z`) : undefined,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'FINANCIAL_GOAL_CREATED' } });
+      return created;
+    });
+    return {
+      id: goal.id,
+      name: goal.name,
+      description: goal.description,
+      currencyCode: goal.currencyCode.trim(),
+      targetAmount: goal.targetAmount.toString(),
+      currentAmount: '0',
+      remainingAmount: goal.targetAmount.toString(),
+      progressPercent: 0,
+      targetDate: goal.targetDate ? toDateOnly(goal.targetDate) : null,
+      isCompleted: false,
+      contributions: [],
+    };
+  }
+  @Post('spaces/:id/goals/:goalId/contributions') async recordGoalContribution(@Req() req: Request, @Param('id') id: string, @Param('goalId') goalId: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to update goals in this space.');
+    const validGoalId = validate(z.string().uuid(), goalId);
+    const input = validate(goalContributionInput, body);
+    if (input.contributionDate > toDateOnly(new Date())) throw new BadRequestException('Contribution date cannot be in the future.');
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "FinancialGoal" WHERE "id" = ${validGoalId} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+      const goal = await tx.financialGoal.findFirst({
+        where: { id: validGoalId, spaceId: membership.spaceId },
+        include: { contributions: { orderBy: [{ contributionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] } },
+      });
+      if (!goal) throw new NotFoundException();
+      let balance = 0n;
+      let inserted = false;
+      const apply = (type: 'CONTRIBUTION' | 'WITHDRAWAL', value: string) => {
+        const units = decimalToUnits(value);
+        balance += type === 'CONTRIBUTION' ? units : -units;
+        if (balance < 0n) throw new BadRequestException('This withdrawal would make the goal balance negative based on its dated history.');
+      };
+      for (const contribution of goal.contributions) {
+        if (!inserted && toDateOnly(contribution.contributionDate) > input.contributionDate) {
+          apply(input.type, input.amount);
+          inserted = true;
+        }
+        apply(contribution.type, contribution.amount.toString());
+      }
+      if (!inserted) apply(input.type, input.amount);
+      const contribution = await tx.goalContribution.create({
+        data: {
+          goalId: goal.id,
+          type: input.type,
+          amount: input.amount,
+          contributionDate: new Date(`${input.contributionDate}T00:00:00.000Z`),
+          description: input.description,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({
+        data: { actorUserId: user.id, spaceId: membership.spaceId, action: input.type === 'CONTRIBUTION' ? 'GOAL_CONTRIBUTION_RECORDED' : 'GOAL_WITHDRAWAL_RECORDED' },
+      });
+      const currentAmount = unitsToDecimal(balance);
+      const isCompleted = decimalToUnits(currentAmount) >= decimalToUnits(goal.targetAmount.toString());
+      return {
+        id: contribution.id,
+        goalId: contribution.goalId,
+        type: contribution.type,
+        amount: contribution.amount.toString(),
+        contributionDate: toDateOnly(contribution.contributionDate),
+        description: contribution.description,
+        currentAmount,
+        remainingAmount: isCompleted ? '0' : subtractDecimals(goal.targetAmount.toString(), currentAmount),
+        isCompleted,
       };
     });
   }

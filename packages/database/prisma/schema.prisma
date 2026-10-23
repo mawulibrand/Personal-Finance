@@ -63,6 +63,21 @@ enum LiabilityStatus {
   ACTIVE
   PAID_OFF
 }
+enum GoalContributionType {
+  CONTRIBUTION
+  WITHDRAWAL
+}
+enum PaydayActionType {
+  SAVINGS_DEPOSIT
+  GOAL_CONTRIBUTION
+  LIABILITY_PAYMENT
+}
+enum PaydayActionStatus {
+  DUE
+  PARTIALLY_COMPLETED
+  COMPLETED
+  SKIPPED
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -81,6 +96,10 @@ model User {
   savingsTransactions SavingsTransaction[]
   liabilities Liability[]
   liabilityPayments LiabilityPayment[]
+  goals FinancialGoal[]
+  netWorthSnapshots NetWorthSnapshot[]
+  goalContributions GoalContribution[]
+  paydayRoutineActions PaydayRoutineAction[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -100,6 +119,9 @@ model FinancialSpace {
   recurringRecords RecurringRecord[]
   savingsAccounts SavingsAccount[]
   liabilities Liability[]
+  goals FinancialGoal[]
+  netWorthSnapshots NetWorthSnapshot[]
+  paydayRoutineActions PaydayRoutineAction[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -175,6 +197,7 @@ model IncomeSource {
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   expectedPaydays SalaryExpectedDate[]
   records IncomeRecord[]
+  paydayRoutineActions PaydayRoutineAction[]
   recurringRecords RecurringRecord[]
   @@index([spaceId, isActive, createdAt])
 }
@@ -199,6 +222,7 @@ model IncomeRecord {
   createdAt DateTime @default(now()) @db.Timestamptz
   source IncomeSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
   recurringOccurrence RecurringOccurrence? @relation("RecurringIncome", fields: [recurringOccurrenceId], references: [id], onDelete: SetNull)
+  paydayRoutineEntries PaydayRoutineEntry[]
   @@unique([sourceId, periodYear, periodMonth])
   @@index([sourceId, receivedDate])
 }
@@ -299,6 +323,7 @@ model SavingsAccount {
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   transactions SavingsTransaction[]
+  paydayRoutineActions PaydayRoutineAction[]
   @@index([spaceId, createdAt])
 }
 model SavingsTransaction {
@@ -334,6 +359,7 @@ model Liability {
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   payments LiabilityPayment[]
+  paydayRoutineActions PaydayRoutineAction[]
   @@index([spaceId, status, createdAt])
 }
 model LiabilityPayment {
@@ -348,4 +374,94 @@ model LiabilityPayment {
   liability Liability @relation(fields: [liabilityId], references: [id], onDelete: Cascade)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   @@index([liabilityId, paidAt, createdAt])
+}
+model FinancialGoal {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  description String?
+  currencyCode String @default("GHS") @db.Char(3)
+  targetAmount Decimal @db.Decimal(19, 4)
+  targetDate DateTime? @db.Date
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  contributions GoalContribution[]
+  paydayRoutineActions PaydayRoutineAction[]
+  @@index([spaceId, createdAt])
+}
+model GoalContribution {
+  id String @id @default(uuid()) @db.Uuid
+  goalId String @db.Uuid
+  type GoalContributionType
+  amount Decimal @db.Decimal(19, 4)
+  contributionDate DateTime @db.Date
+  description String?
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  goal FinancialGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([goalId, contributionDate, createdAt])
+}
+model NetWorthSnapshot {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  snapshotDate DateTime @db.Date
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  currencies NetWorthSnapshotCurrency[]
+  @@unique([spaceId, snapshotDate])
+  @@index([spaceId, snapshotDate])
+}
+model NetWorthSnapshotCurrency {
+  id String @id @default(uuid()) @db.Uuid
+  snapshotId String @db.Uuid
+  currencyCode String @db.Char(3)
+  assets Decimal @db.Decimal(19, 4)
+  liabilities Decimal @db.Decimal(19, 4)
+  netWorth Decimal @db.Decimal(19, 4)
+  snapshot NetWorthSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  @@unique([snapshotId, currencyCode])
+  @@index([currencyCode])
+}
+model PaydayRoutineAction {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  sourceId String @db.Uuid
+  type PaydayActionType
+  name String
+  plannedAmount Decimal @db.Decimal(19, 4)
+  savingsAccountId String? @db.Uuid
+  goalId String? @db.Uuid
+  liabilityId String? @db.Uuid
+  isActive Boolean @default(true)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  source IncomeSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  savingsAccount SavingsAccount? @relation(fields: [savingsAccountId], references: [id], onDelete: Restrict)
+  goal FinancialGoal? @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  liability Liability? @relation(fields: [liabilityId], references: [id], onDelete: Restrict)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  entries PaydayRoutineEntry[]
+  @@index([spaceId, isActive, createdAt])
+}
+model PaydayRoutineEntry {
+  id String @id @default(uuid()) @db.Uuid
+  incomeRecordId String @db.Uuid
+  actionId String @db.Uuid
+  plannedAmount Decimal @db.Decimal(19, 4)
+  completedAmount Decimal @default(0) @db.Decimal(19, 4)
+  status PaydayActionStatus @default(DUE)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  incomeRecord IncomeRecord @relation(fields: [incomeRecordId], references: [id], onDelete: Cascade)
+  action PaydayRoutineAction @relation(fields: [actionId], references: [id], onDelete: Restrict)
+  @@unique([incomeRecordId, actionId])
+  @@index([status, createdAt])
 }

@@ -145,6 +145,108 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(liabilityList.body.liabilities[0].status, 'PAID_OFF');
   assert.equal(liabilityList.body.liabilities[0].principalPaid, '800');
   assert.equal(liabilityList.body.liabilities[0].payments.length, 3);
+  const goalsPath = `spaces/${spaces.body[0].id}/goals`;
+  assert.equal((await request(goalsPath)).status, 401);
+  const goal = await request(goalsPath, {
+    name: 'Emergency fund', description: 'Three months of essential costs', targetAmount: '500', currencyCode: 'GHS', targetDate: '2030-12-31',
+  }, login.cookie);
+  assert.equal(goal.status, 201);
+  assert.equal(goal.body.currentAmount, '0');
+  assert.equal(goal.body.remainingAmount, '500');
+  const goalContributionsPath = `${goalsPath}/${goal.body.id}/contributions`;
+  assert.equal((await request(goalContributionsPath, { type: 'CONTRIBUTION', amount: '250.25', contributionDate: receivedDate, description: 'First deposit' }, login.cookie)).status, 201);
+  assert.equal((await request(goalContributionsPath, { type: 'WITHDRAWAL', amount: '300', contributionDate: receivedDate }, login.cookie)).status, 400);
+  const goalContribution = await request(goalContributionsPath, { type: 'CONTRIBUTION', amount: '249.75', contributionDate: receivedDate }, login.cookie);
+  assert.equal(goalContribution.status, 201);
+  assert.equal(goalContribution.body.currentAmount, '500');
+  assert.equal(goalContribution.body.remainingAmount, '0');
+  assert.equal(goalContribution.body.isCompleted, true);
+  const goals = await request(goalsPath, undefined, login.cookie);
+  assert.equal(goals.status, 200);
+  assert.equal(goals.body.goals[0].progressPercent, 100);
+  assert.equal(goals.body.goals[0].isCompleted, true);
+  assert.equal(goals.body.goals[0].contributions.length, 2);
+  const goalWithdrawal = await request(goalContributionsPath, { type: 'WITHDRAWAL', amount: '20', contributionDate: receivedDate }, login.cookie);
+  assert.equal(goalWithdrawal.status, 201);
+  assert.equal(goalWithdrawal.body.currentAmount, '480');
+  assert.equal(goalWithdrawal.body.isCompleted, false);
+  const invalidDatedGoalWithdrawal = await request(goalContributionsPath, { type: 'WITHDRAWAL', amount: '100', contributionDate: '2000-01-01' }, login.cookie);
+  assert.equal(invalidDatedGoalWithdrawal.status, 400);
+  const netWorthPath = `spaces/${spaces.body[0].id}/net-worth`;
+  assert.equal((await request(netWorthPath)).status, 401);
+  const netWorth = await request(netWorthPath, undefined, login.cookie);
+  assert.equal(netWorth.status, 200);
+  assert.equal(netWorth.body.current.find(item => item.currencyCode === 'GHS').assets, '30.25');
+  assert.equal(netWorth.body.current.find(item => item.currencyCode === 'GHS').liabilities, '0');
+  assert.equal(netWorth.body.current.find(item => item.currencyCode === 'GHS').netWorth, '30.25');
+  const netWorthSnapshotPath = `${netWorthPath}/snapshots`;
+  const netWorthSnapshot = await request(netWorthSnapshotPath, { snapshotDate: receivedDate }, login.cookie);
+  assert.equal(netWorthSnapshot.status, 201);
+  assert.equal(netWorthSnapshot.body.currencies.find(item => item.currencyCode === 'GHS').netWorth, '30.25');
+  assert.equal((await request(netWorthSnapshotPath, { snapshotDate: receivedDate }, login.cookie)).status, 409);
+  assert.equal((await request(netWorthSnapshotPath, { snapshotDate: futureDate }, login.cookie)).status, 400);
+  const netWorthHistory = await request(netWorthPath, undefined, login.cookie);
+  assert.equal(netWorthHistory.body.snapshots.length, 1);
+  assert.equal(netWorthHistory.body.snapshots[0].snapshotDate, receivedDate);
+  const paydayPath = `spaces/${spaces.body[0].id}/payday-routines`;
+  assert.equal((await request(paydayPath)).status, 401);
+  const routineSalary = await request(incomePath, {
+    name: 'Routine salary', type: 'SALARY', expectedAmount: '1000', currencyCode: 'GHS', paydayDays: [25], adjustmentRule: 'NO_ADJUSTMENT',
+  }, login.cookie);
+  assert.equal(routineSalary.status, 201);
+  const routineSavingsAction = await request(paydayPath, {
+    sourceId: routineSalary.body.id, type: 'SAVINGS_DEPOSIT', name: 'Monthly reserve', plannedAmount: '30', targetId: savingsAccount.body.id,
+  }, login.cookie);
+  assert.equal(routineSavingsAction.status, 201);
+  const routineGoalAction = await request(paydayPath, {
+    sourceId: routineSalary.body.id, type: 'GOAL_CONTRIBUTION', name: 'Build emergency fund', plannedAmount: '200', targetId: goal.body.id,
+  }, login.cookie);
+  assert.equal(routineGoalAction.status, 201);
+  const routineLiability = await request(liabilitiesPath, {
+    type: 'PERSONAL_LOAN', name: 'Routine loan', originalAmount: '100', openingBalance: '100', startDate: receivedDate, currencyCode: 'GHS',
+  }, login.cookie);
+  assert.equal(routineLiability.status, 201);
+  const routineDebtAction = await request(paydayPath, {
+    sourceId: routineSalary.body.id, type: 'LIABILITY_PAYMENT', name: 'Pay down routine loan', plannedAmount: '50', targetId: routineLiability.body.id,
+  }, login.cookie);
+  assert.equal(routineDebtAction.status, 201);
+  const foreignSalary = await request(incomePath, {
+    name: 'Foreign salary', type: 'SALARY', expectedAmount: '1000', currencyCode: 'USD', paydayDays: [25], adjustmentRule: 'NO_ADJUSTMENT',
+  }, login.cookie);
+  assert.equal(foreignSalary.status, 201);
+  assert.equal((await request(paydayPath, {
+    sourceId: foreignSalary.body.id, type: 'SAVINGS_DEPOSIT', name: 'Wrong currency target', plannedAmount: '30', targetId: savingsAccount.body.id,
+  }, login.cookie)).status, 400);
+  const routineSalaryReceipt = await request(`${incomePath}/${routineSalary.body.id}/records`, {
+    amount: '1000', receivedDate, periodYear: now.getUTCFullYear(), periodMonth: now.getUTCMonth() + 1,
+  }, login.cookie);
+  assert.equal(routineSalaryReceipt.status, 201);
+  let paydayRoutines = await request(paydayPath, undefined, login.cookie);
+  assert.equal(paydayRoutines.status, 200);
+  assert.equal(paydayRoutines.body.actions.length, 3);
+  assert.equal(paydayRoutines.body.entries.length, 3);
+  const goalRoutineEntry = paydayRoutines.body.entries.find(entry => entry.type === 'GOAL_CONTRIBUTION');
+  const debtRoutineEntry = paydayRoutines.body.entries.find(entry => entry.type === 'LIABILITY_PAYMENT');
+  const savingsRoutineEntry = paydayRoutines.body.entries.find(entry => entry.type === 'SAVINGS_DEPOSIT');
+  assert.equal(goalRoutineEntry.status, 'DUE');
+  const partialGoalRoutine = await request(`${paydayPath}/${goalRoutineEntry.id}/complete`, { amount: '120', completedDate: receivedDate }, login.cookie);
+  assert.equal(partialGoalRoutine.status, 201);
+  assert.equal(partialGoalRoutine.body.status, 'PARTIALLY_COMPLETED');
+  assert.equal(partialGoalRoutine.body.remainingAmount, '80');
+  const completeGoalRoutine = await request(`${paydayPath}/${goalRoutineEntry.id}/complete`, { amount: '80', completedDate: receivedDate }, login.cookie);
+  assert.equal(completeGoalRoutine.body.status, 'COMPLETED');
+  const partialDebtRoutine = await request(`${paydayPath}/${debtRoutineEntry.id}/complete`, { amount: '25', principalAmount: '20', completedDate: receivedDate }, login.cookie);
+  assert.equal(partialDebtRoutine.body.status, 'PARTIALLY_COMPLETED');
+  const completeDebtRoutine = await request(`${paydayPath}/${debtRoutineEntry.id}/complete`, { amount: '25', completedDate: receivedDate }, login.cookie);
+  assert.equal(completeDebtRoutine.body.status, 'COMPLETED');
+  assert.equal((await request(`${paydayPath}/${goalRoutineEntry.id}/complete`, { amount: '1', completedDate: receivedDate }, login.cookie)).status, 400);
+  assert.equal((await request(`${paydayPath}/${savingsRoutineEntry.id}/skip`, {}, login.cookie)).body.status, 'SKIPPED');
+  assert.equal((await request(`${paydayPath}/${savingsRoutineEntry.id}/skip`, {}, login.cookie)).status, 400);
+  assert.equal((await request(`${paydayPath}/${routineGoalAction.body.id}/status`, { isActive: false }, login.cookie)).body.isActive, false);
+  assert.equal((await request(`${paydayPath}/${routineGoalAction.body.id}/status`, { isActive: true }, login.cookie)).body.isActive, true);
+  paydayRoutines = await request(paydayPath, undefined, login.cookie);
+  assert.equal(paydayRoutines.body.entries.find(entry => entry.id === goalRoutineEntry.id).status, 'COMPLETED');
+  assert.equal(paydayRoutines.body.entries.find(entry => entry.id === savingsRoutineEntry.id).status, 'SKIPPED');
   const recurringPath = `spaces/${spaces.body[0].id}/recurring-records`;
   const recurringExpense = await request(recurringPath, {
     name: 'Monthly pet food', flow: 'EXPENSE', amount: '30', frequency: 'MONTHLY', startDate: receivedDate, categoryId: customCategory.body.id,
@@ -181,10 +283,10 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(updatedBudget.body.allocations[0].remaining, '66.55');
   assert.equal((await request(`${budgetsPath}/allocations`, { month: budgetMonth, categoryId: incomeCategory.id, limitAmount: '100' }, login.cookie)).status, 400);
   const dashboardData = await request(`${path}?month=${budgetMonth}`, undefined, login.cookie);
-  assert.equal(dashboardData.body.income.total, '6850.25');
+  assert.equal(dashboardData.body.income.total, '7850.25');
   assert.equal(dashboardData.body.income.excludedCurrencyCount, 1);
   assert.equal(dashboardData.body.expenses.total, '53.45');
-  assert.equal(dashboardData.body.netCashFlow, '6796.8');
+  assert.equal(dashboardData.body.netCashFlow, '7796.8');
   assert.equal(dashboardData.body.expenses.byCategory[0].total, '53.45');
   assert.equal(dashboardData.body.budget.remaining, '66.55');
   await request('auth/register', { name: 'Bob', email: secondEmail, password });
@@ -197,9 +299,14 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(budgetsPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(savingsPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(liabilitiesPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(goalsPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(netWorthPath, undefined, bob.cookie)).status, 404);
+  assert.equal((await request(paydayPath, undefined, bob.cookie)).status, 404);
   const bobSpaces = await request('spaces', undefined, bob.cookie);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/savings-accounts/${savingsAccount.body.id}/transactions`, { type: 'DEPOSIT', amount: '1', transactionDate: receivedDate }, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/liabilities/${liability.body.id}/payments`, { amount: '1', paidAt: receivedDate }, bob.cookie)).status, 404);
+  assert.equal((await request(`spaces/${bobSpaces.body[0].id}/goals/${goal.body.id}/contributions`, { type: 'CONTRIBUTION', amount: '1', contributionDate: receivedDate }, bob.cookie)).status, 404);
+  assert.equal((await request(`spaces/${bobSpaces.body[0].id}/payday-routines/${goalRoutineEntry.id}/skip`, {}, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/expenses`, { categoryId: customCategory.body.id, amount: '3', spentAt: receivedDate }, bob.cookie)).status, 400);
   assert.equal((await request(expensesPath, undefined, bob.cookie)).status, 404);
   const csrf = await fetch(`${apiOrigin}/auth/logout`, { method: 'POST', headers: { Origin: 'http://untrusted.example', Cookie: login.cookie, 'Content-Type': 'application/json' }, body: '{}' });

@@ -1,0 +1,243 @@
+.page {
+  padding-top: 48px !important;
+}
+
+.page h1 {
+  margin: 14px 0;
+  font-family: Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+}
+
+.panel {
+  margin: 24px 0;
+  padding: 26px 28px;
+  border: 1px solid #dce1d7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.panel h2 {
+  margin: 0 0 20px;
+  font-size: 24px;
+}
+
+.goalForm,
+.contributionForm {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 10px 20px;
+}
+
+.goalForm label,
+.contributionForm label {
+  margin: 8px 0;
+}
+
+.goalForm input,
+.contributionForm input,
+.contributionForm select {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 13px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.goalForm button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  width: auto;
+  min-width: 170px;
+  margin-top: 8px;
+}
+
+.fullWidth {
+  grid-column: 1 / -1;
+}
+
+.optional {
+  color: #78857c;
+  font-weight: 400;
+}
+
+.summaryHeading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.summaryHeading .eyebrow {
+  margin: 0 0 8px;
+}
+
+.summaryHeading h2 {
+  margin: 0;
+}
+
+.goals {
+  display: grid;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+.goal {
+  padding: 22px;
+  border: 1px solid #e2e7df;
+  border-radius: 10px;
+}
+
+.goalHeading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.goalHeading .eyebrow {
+  margin: 0 0 7px;
+}
+
+.goalHeading h3 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.goalHeading p {
+  margin: 7px 0 0;
+  font-size: 13px;
+}
+
+.progressSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  margin: 18px 0 8px;
+}
+
+.progressSummary strong {
+  font-size: 21px;
+}
+
+.progressSummary span {
+  color: #64746c;
+  font-size: 13px;
+}
+
+.goal progress {
+  width: 100%;
+  height: 10px;
+  accent-color: #286548;
+}
+
+.contributionForm {
+  margin-top: 18px;
+  padding: 17px;
+  border-radius: 8px;
+  background: #f7f8f3;
+}
+
+.contributionForm label {
+  margin: 0;
+}
+
+.contributionForm button {
+  justify-self: start;
+  width: auto;
+  min-width: 180px;
+}
+
+.activityHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.activityHeading h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.contributions {
+  padding: 0;
+  margin: 12px 0 0;
+  list-style: none;
+}
+
+.contributions li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-top: 1px solid #edf0e9;
+}
+
+.contributions li div {
+  display: grid;
+  gap: 6px;
+}
+
+.contributions li span {
+  color: #64746c;
+  font-size: 13px;
+}
+
+.contributions li > strong {
+  white-space: nowrap;
+}
+
+.addition {
+  color: #286548;
+}
+
+.removal {
+  color: #8c4c3d;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding-top: 32px !important;
+  }
+
+  .page h1 {
+    font-size: 38px;
+  }
+
+  .panel {
+    padding: 21px;
+  }
+
+  .goalForm,
+  .contributionForm {
+    grid-template-columns: 1fr;
+  }
+
+  .goalForm button,
+  .contributionForm button {
+    grid-column: auto;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .fullWidth {
+    grid-column: auto;
+  }
+
+  .goal {
+    padding: 17px;
+  }
+
+  .goalHeading {
+    flex-direction: column;
+    gap: 10px;
+  }
+}
