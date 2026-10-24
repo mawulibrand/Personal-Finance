@@ -62,19 +62,18 @@ Implement:
 •	scenario-to-plan conversion.
 Acceptance:
 A user can model alternatives and convert a chosen scenario into a trackable plan.
-Phase 7 — AI Financial Intelligence
+Phase 7 — Rule-Based Financial Insights
 Implement:
 •	profile snapshots;
 •	financial rules;
-•	AI provider abstraction;
-•	recommendation generation;
+•	deterministic strategy generation from validated facts;
 •	multiple strategies;
 •	feedback;
 •	monthly reviews;
 •	on-demand insights;
 •	strategy-to-plan conversion.
 Acceptance:
-AI recommendations contain only facts supplied by validated system context and cannot alter deterministic calculations.
+Every insight is traceable to validated facts and explicit rules, and cannot alter authoritative financial calculations or records. A selected or modified strategy can become a goal-linked plan only after the user supplies its projection assumptions; conversion is private to the Financial Space and cannot be repeated.
 Phase 8 — Household Finance
 Implement:
 •	Household Spaces;
@@ -130,7 +129,7 @@ Implement:
 •	deletion;
 •	sensitive-log review.
 Acceptance:
-Core finance functionality remains usable during AI-provider failure, and existing historical data remains understandable during FX-provider failure.
+Core finance functionality remains usable if review generation fails, and existing historical data remains understandable during FX-provider failure.
 ________________________________________
 CI/CD
 Pipeline:
@@ -176,13 +175,13 @@ Monitor:
 •	PostgreSQL health;
 •	Redis health;
 •	object-storage failures;
-•	AI failures;
-•	AI cost/token usage;
+•	financial-review generation failures;
+•	financial-rule evaluation errors;
 •	notification failures;
 •	FX failures;
 •	scheduled-job failures;
 •	backup failures.
-A lightweight administration interface provides operational visibility without automatically granting administrators access to users' salaries, balances, debts, investments or complete AI prompts.
+A lightweight administration interface provides operational visibility without automatically granting administrators access to users' salaries, balances, debts, investments or complete financial-review payloads.
 ________________________________________
 Milestones
 M1 — Foundation
@@ -195,8 +194,8 @@ M3 — Wealth & Portfolio
 Deliver investments, fixed deposits, transaction history, valuations, maturities and historical portfolio tracking.
 Exit criterion: portfolio state can be reconstructed and explained from stored records.
 M4 — Financial Intelligence
-Deliver portfolio analytics, scenarios, rules, AI strategies and editable Financial Plans.
-Exit criterion: deterministic analytics pass known datasets and AI cannot override them.
+Deliver portfolio analytics, scenarios, deterministic financial rules and strategies, and editable Financial Plans.
+Exit criterion: analytics pass known datasets and rule-based insights cannot override financial calculations or records.
 M5 — Family & Engagement
 Deliver households, dependants, selective sharing, ownership, gamification, payday routines, notifications, multi-currency and external discovery.
 Exit criterion: collaborative finance works without violating Personal-space privacy.
@@ -205,7 +204,7 @@ Deliver MFA, backups, restore tests, observability, administration, data export/
 Exit criterion: production-readiness checklist and recovery exercises pass.
 ________________________________________
 Gathering Results
-Evaluation covers financial behavior, engagement, calculation correctness, AI usefulness, reliability and security.
+Evaluation covers financial behavior, engagement, calculation correctness, insight usefulness, reliability and security.
 Financial-Health Indicators
 Measure changes over time in:
 •	savings rate;
@@ -241,7 +240,7 @@ planned contribution completion
 overdue salary confirmations
 Use this information to suggest schedule changes when actual payment behavior consistently differs.
 Never silently alter a user's payday configuration.
-AI Quality
+Financial Review Quality
 Measure:
 HELPFUL
 NOT_HELPFUL
@@ -252,8 +251,8 @@ strategy modification rate
 strategy rejection rate
 invalid-output rate
 generation failure rate
-cost per review
-AI output should also be evaluated for whether it introduces facts absent from the validated profile snapshot.
+unsupported-fact rate
+Generated strategies must only reference validated facts present in the profile snapshot.
 Calculation Quality
 Maintain independent expected-result datasets for:
 •	net worth;
@@ -275,7 +274,7 @@ Financial information receives freshness indicators such as:
 UP_TO_DATE
 UPDATE_RECOMMENDED
 POTENTIALLY_STALE
-AI explanations must respect freshness.
+Financial review explanations must respect data freshness.
 Example:
 This analysis uses an investment valuation last updated 90 days ago.
 Update the valuation for a more current portfolio analysis.
@@ -286,7 +285,7 @@ API latency
 API error rate
 background-job failure rate
 notification-delivery rate
-AI-provider failure rate
+financial-review generation failure rate
 FX-provider failure rate
 database health
 backup success
@@ -304,7 +303,7 @@ Monitor:
 Financial values must not be unnecessarily copied into monitoring systems.
 ________________________________________
 Final Architecture Principle
-The platform should help users understand and organize their finances without pretending that an AI model is an accountant, investment exchange or autonomous financial manager.
+The platform should help users understand and organize their finances without presenting deterministic insights as guaranteed outcomes or autonomous financial management.
 The authoritative flow remains:
 USER FINANCIAL DATA
         ↓
@@ -314,7 +313,7 @@ CALCULATED FACTS
         ↓
 CONFIGURABLE FINANCIAL RULES
         ↓
-AI EXPLANATION + POSSIBLE STRATEGIES
+DETERMINISTIC EXPLANATIONS + POSSIBLE STRATEGIES
         ↓
 USER DECISION
         ↓

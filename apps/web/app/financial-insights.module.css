@@ -190,6 +190,57 @@
   font-size: 13px;
 }
 
+.planStatus {
+  padding: 12px;
+  border-left: 3px solid #5c9b73;
+  background: #f1f5ed;
+}
+
+.conversion {
+  padding-top: 14px;
+  border-top: 1px solid #e2e7df;
+}
+
+.conversion summary {
+  width: fit-content;
+  color: #245c48;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.conversionForm {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.conversionFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.conversionFields label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.conversionFields input,
+.conversionFields select {
+  width: 100%;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.conversionForm button {
+  width: fit-content;
+}
+
 @media (max-width: 760px) {
   .page {
     padding-top: 32px !important;
@@ -205,6 +256,14 @@
 
   .metrics {
     grid-template-columns: 1fr;
+  }
+
+  .conversionFields {
+    grid-template-columns: 1fr;
+  }
+
+  .conversionForm button {
+    width: 100%;
   }
 
   .actions button {

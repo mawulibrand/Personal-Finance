@@ -509,6 +509,7 @@ model FinancialPlan {
   spaceId String @db.Uuid
   scenarioId String @unique @db.Uuid
   goalId String @unique @db.Uuid
+  recommendationStrategyId String? @unique @db.Uuid
   name String
   currencyCode String @db.Char(3)
   startingCapital Decimal @db.Decimal(19, 4)
@@ -525,6 +526,7 @@ model FinancialPlan {
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   scenario Scenario @relation(fields: [scenarioId], references: [id], onDelete: Restrict)
   goal FinancialGoal @relation(fields: [goalId], references: [id], onDelete: Restrict)
+  recommendationStrategy RecommendationStrategy? @relation(fields: [recommendationStrategyId], references: [id], onDelete: SetNull)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   @@index([spaceId, createdAt])
 }
@@ -576,6 +578,7 @@ model RecommendationStrategy {
   createdAt DateTime @default(now()) @db.Timestamptz
   snapshot FinancialProfileSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
   responder User? @relation(fields: [respondedBy], references: [id], onDelete: Restrict)
+  financialPlan FinancialPlan?
   @@unique([snapshotId, ruleCode])
   @@index([snapshotId, severity])
 }

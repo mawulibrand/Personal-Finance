@@ -263,12 +263,35 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(`${financialReviewsPath}/${review.body.id}/strategies/${strategy.id}/response`, {
     decision: 'MODIFIED',
   }, login.cookie)).status, 400);
+  const strategyPlanPath = `${financialReviewsPath}/${review.body.id}/strategies/${strategy.id}/convert`;
+  const strategyPlanInput = {
+    name: strategy.title,
+    startingCapital: '0',
+    recurringContribution: '50',
+    contributionFrequency: 'MONTHLY',
+    expectedAnnualReturn: '0',
+    durationYears: 1,
+    inflationRate: '0',
+    annualContributionGrowth: '0',
+  };
+  assert.equal((await request(strategyPlanPath, strategyPlanInput, login.cookie)).status, 409);
   const strategyResponse = await request(`${financialReviewsPath}/${review.body.id}/strategies/${strategy.id}/response`, {
     decision: 'MODIFIED', feedback: 'HELPFUL', userNote: 'Check the records and revisit the flexible spending categories.',
   }, login.cookie);
   assert.equal(strategyResponse.status, 201);
   assert.equal(strategyResponse.body.decision, 'MODIFIED');
   assert.equal(strategyResponse.body.feedback, 'HELPFUL');
+  assert.equal((await request(strategyPlanPath, {}, login.cookie)).status, 400);
+  const convertedStrategyReview = await request(strategyPlanPath, strategyPlanInput, login.cookie);
+  assert.equal(convertedStrategyReview.status, 201);
+  const convertedStrategy = convertedStrategyReview.body.strategies.find(item => item.id === strategy.id);
+  assert.equal(convertedStrategy.financialPlan.name, strategy.title);
+  assert.equal(convertedStrategy.financialPlan.projectedTarget, '600');
+  assert.equal(convertedStrategy.financialPlan.actualContributions, '0');
+  assert.equal((await request(strategyPlanPath, strategyPlanInput, login.cookie)).status, 409);
+  assert.equal((await request(`${financialReviewsPath}/${review.body.id}/strategies/${strategy.id}/response`, {
+    decision: 'REJECTED',
+  }, login.cookie)).status, 409);
   const monthlyReview = await request(financialReviewsPath, { trigger: 'MONTHLY' }, login.cookie);
   assert.equal(monthlyReview.status, 201);
   const duplicateMonthlyReview = await request(financialReviewsPath, { trigger: 'MONTHLY' }, login.cookie);
@@ -296,7 +319,10 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(alternativeScenario.status, 201);
   const comparedScenarios = await request(scenariosPath, undefined, login.cookie);
   assert.equal(comparedScenarios.status, 200);
-  assert.equal(comparedScenarios.body.length, 2);
+  assert.equal(comparedScenarios.body.length, 3);
+  const strategyScenario = comparedScenarios.body.find(item => item.name === strategy.title);
+  assert.ok(strategyScenario.financialPlan.id);
+  assert.equal(strategyScenario.financialPlan.projectedTarget, convertedStrategy.financialPlan.projectedTarget);
   const convertedScenario = await request(`${scenariosPath}/${steadyScenario.body.id}/convert`, {}, login.cookie);
   assert.equal(convertedScenario.status, 201);
   assert.ok(convertedScenario.body.financialPlan.id);

@@ -150,6 +150,7 @@ const scenarioInput = z.object({
     context.addIssue({ code: 'custom', path: ['annualContributionGrowth'], message: 'Contribution growth must be between -100% and 100%.' });
   }
 });
+const strategyPlanInput = scenarioInput.omit({ currencyCode: true });
 const paydayRoutineActionInput = z.object({
   sourceId: z.string().uuid(),
   type: z.enum(['SAVINGS_DEPOSIT', 'GOAL_CONTRIBUTION', 'LIABILITY_PAYMENT']),
@@ -398,7 +399,66 @@ function addYearsToDate(date: Date, years: number) {
   return new Date(Date.UTC(year, month, dayOfMonth));
 }
 
-type FinancialReviewRecord = Prisma.FinancialProfileSnapshotGetPayload<{ include: { strategies: true } }>;
+async function createPlanFromScenario(
+  tx: Prisma.TransactionClient,
+  scenario: Prisma.ScenarioGetPayload<{}>,
+  userId: string,
+  recommendationStrategyId?: string,
+  goalDescription = 'Scenario projection target; actual results may differ and investment returns are not guaranteed.',
+) {
+  const projection = calculateScenarioProjection({
+    startingCapital: Number(scenario.startingCapital),
+    recurringContribution: Number(scenario.recurringContribution),
+    contributionFrequency: scenario.contributionFrequency as ContributionFrequency,
+    expectedAnnualReturn: Number(scenario.expectedAnnualReturn),
+    durationYears: scenario.durationYears,
+    inflationRate: Number(scenario.inflationRate),
+    annualContributionGrowth: Number(scenario.annualContributionGrowth),
+  });
+  const finalProjection = projection.at(-1);
+  if (!finalProjection || finalProjection.nominalValue <= 0 || finalProjection.nominalValue > 999_999_999_999_999) {
+    throw new BadRequestException('The projected target is outside the supported goal amount range.');
+  }
+  const targetDate = addYearsToDate(new Date(`${toDateOnly(new Date())}T00:00:00.000Z`), scenario.durationYears);
+  const goal = await tx.financialGoal.create({
+    data: {
+      spaceId: scenario.spaceId,
+      name: scenario.name,
+      description: goalDescription,
+      currencyCode: scenario.currencyCode,
+      targetAmount: finalProjection.nominalValue.toFixed(4),
+      targetDate,
+      createdBy: userId,
+    },
+  });
+  return tx.financialPlan.create({
+    data: {
+      spaceId: scenario.spaceId,
+      scenarioId: scenario.id,
+      goalId: goal.id,
+      recommendationStrategyId,
+      name: scenario.name,
+      currencyCode: scenario.currencyCode,
+      startingCapital: scenario.startingCapital,
+      recurringContribution: scenario.recurringContribution,
+      contributionFrequency: scenario.contributionFrequency,
+      expectedAnnualReturn: scenario.expectedAnnualReturn,
+      durationYears: scenario.durationYears,
+      inflationRate: scenario.inflationRate,
+      annualContributionGrowth: scenario.annualContributionGrowth,
+      projectedTarget: finalProjection.nominalValue.toFixed(4),
+      createdBy: userId,
+    },
+  });
+}
+
+const financialReviewInclude = {
+  strategies: {
+    orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }],
+    include: { financialPlan: { include: { goal: { include: { contributions: true } } } } },
+  },
+} satisfies Prisma.FinancialProfileSnapshotInclude;
+type FinancialReviewRecord = Prisma.FinancialProfileSnapshotGetPayload<{ include: typeof financialReviewInclude }>;
 function financialReviewResponse(snapshot: FinancialReviewRecord) {
   return {
     id: snapshot.id,
@@ -421,6 +481,16 @@ function financialReviewResponse(snapshot: FinancialReviewRecord) {
       feedback: strategy.feedback,
       userNote: strategy.userNote,
       respondedAt: strategy.respondedAt?.toISOString() ?? null,
+      financialPlan: strategy.financialPlan ? {
+        id: strategy.financialPlan.id,
+        name: strategy.financialPlan.name,
+        goalId: strategy.financialPlan.goalId,
+        projectedTarget: strategy.financialPlan.projectedTarget.toString(),
+        actualContributions: subtractDecimals(
+          addDecimals(...strategy.financialPlan.goal.contributions.filter(contribution => contribution.type === 'CONTRIBUTION').map(contribution => contribution.amount.toString())),
+          addDecimals(...strategy.financialPlan.goal.contributions.filter(contribution => contribution.type === 'WITHDRAWAL').map(contribution => contribution.amount.toString())),
+        ),
+      } : null,
     })),
   };
 }
@@ -689,7 +759,7 @@ class Api {
     const membership = await this.spaceMembership(user.id, id);
     const reviews = await db.financialProfileSnapshot.findMany({
       where: { spaceId: membership.spaceId },
-      include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+      include: financialReviewInclude,
       orderBy: { createdAt: 'desc' },
       take: 12,
     });
@@ -706,7 +776,7 @@ class Api {
     if (monthlyPeriod) {
       const existing = await db.financialProfileSnapshot.findUnique({
         where: { spaceId_monthlyPeriod: { spaceId: membership.spaceId, monthlyPeriod } },
-        include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+        include: financialReviewInclude,
       });
       if (existing) return financialReviewResponse(existing);
     }
@@ -741,7 +811,7 @@ class Api {
         await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: trigger === 'MONTHLY' ? 'MONTHLY_FINANCIAL_REVIEW_CREATED' : 'FINANCIAL_REVIEW_CREATED' } });
         return tx.financialProfileSnapshot.findUniqueOrThrow({
           where: { id: snapshot.id },
-          include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+          include: financialReviewInclude,
         });
       });
       return financialReviewResponse(review);
@@ -749,7 +819,7 @@ class Api {
       if (monthlyPeriod && error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         const existing = await db.financialProfileSnapshot.findUniqueOrThrow({
           where: { spaceId_monthlyPeriod: { spaceId: membership.spaceId, monthlyPeriod } },
-          include: { strategies: { orderBy: [{ severity: 'asc' }, { createdAt: 'asc' }] } },
+          include: financialReviewInclude,
         });
         return financialReviewResponse(existing);
       }
@@ -771,8 +841,12 @@ class Api {
     const validStrategyId = validate(z.string().uuid(), strategyId);
     const strategy = await db.recommendationStrategy.findFirst({
       where: { id: validStrategyId, snapshotId: validReviewId, snapshot: { spaceId: membership.spaceId } },
+      include: { financialPlan: true },
     });
     if (!strategy) throw new NotFoundException();
+    if (strategy.financialPlan && input.decision) {
+      throw new ConflictException('The decision cannot be changed after this strategy has been converted to a plan.');
+    }
     const updated = await db.$transaction(async tx => {
       const result = await tx.recommendationStrategy.update({
         where: { id: strategy.id },
@@ -794,6 +868,84 @@ class Api {
       userNote: updated.userNote,
       respondedAt: updated.respondedAt?.toISOString() ?? null,
     };
+  }
+  @Post('spaces/:id/financial-reviews/:reviewId/strategies/:strategyId/convert') async convertStrategyToPlan(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('reviewId') reviewId: string,
+    @Param('strategyId') strategyId: string,
+    @Body() body: unknown,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to create a plan in this space.');
+    const input = validate(strategyPlanInput, body);
+    const validReviewId = validate(z.string().uuid(), reviewId);
+    const validStrategyId = validate(z.string().uuid(), strategyId);
+    const strategy = await db.recommendationStrategy.findFirst({
+      where: { id: validStrategyId, snapshotId: validReviewId, snapshot: { spaceId: membership.spaceId } },
+      include: { snapshot: true, financialPlan: true },
+    });
+    if (!strategy) throw new NotFoundException();
+    if (strategy.decision !== 'SELECTED' && strategy.decision !== 'MODIFIED') {
+      throw new ConflictException('Select or modify this strategy before converting it to a plan.');
+    }
+    if (strategy.financialPlan) throw new ConflictException('This strategy has already been converted to a plan.');
+    const assumptions = {
+      startingCapital: Number(input.startingCapital),
+      recurringContribution: Number(input.recurringContribution),
+      contributionFrequency: input.contributionFrequency,
+      expectedAnnualReturn: Number(input.expectedAnnualReturn),
+      durationYears: input.durationYears,
+      inflationRate: Number(input.inflationRate),
+      annualContributionGrowth: Number(input.annualContributionGrowth),
+    };
+    try { calculateScenarioProjection(assumptions); }
+    catch (error) {
+      if (error instanceof RangeError) throw new BadRequestException(error.message);
+      throw error;
+    }
+    try {
+      await db.$transaction(async tx => {
+        const current = await tx.recommendationStrategy.findUnique({ where: { id: strategy.id } });
+        const existingPlan = await tx.financialPlan.findUnique({ where: { recommendationStrategyId: strategy.id } });
+        if (!current || (current.decision !== 'SELECTED' && current.decision !== 'MODIFIED')) {
+          throw new ConflictException('Select or modify this strategy before converting it to a plan.');
+        }
+        if (existingPlan) throw new ConflictException('This strategy has already been converted to a plan.');
+        const scenario = await tx.scenario.create({
+          data: {
+            ...input,
+            currencyCode: strategy.snapshot.currencyCode,
+            spaceId: membership.spaceId,
+            createdBy: user.id,
+          },
+        });
+        const strategyContext = strategy.userNote
+          ? ` User modification: ${strategy.userNote}`
+          : '';
+        await createPlanFromScenario(
+          tx,
+          scenario,
+          user.id,
+          strategy.id,
+          `Created from financial review strategy "${strategy.title}".${strategyContext} Actual results may differ; investment returns are not guaranteed.`,
+        );
+        await tx.auditEvent.create({
+          data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'FINANCIAL_STRATEGY_CONVERTED_TO_PLAN' },
+        });
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('This strategy has already been converted to a plan.');
+      }
+      throw error;
+    }
+    const updatedReview = await db.financialProfileSnapshot.findUniqueOrThrow({
+      where: { id: strategy.snapshotId },
+      include: financialReviewInclude,
+    });
+    return financialReviewResponse(updatedReview);
   }
   @Get('spaces/:id/scenarios') async scenarios(@Req() req: Request, @Param('id') id: string) {
     const user = await this.identity.user(req);
@@ -852,51 +1004,9 @@ class Api {
     });
     if (!scenario) throw new NotFoundException();
     if (scenario.financialPlan) throw new ConflictException('This scenario has already been converted to a plan.');
-    const projection = calculateScenarioProjection({
-      startingCapital: Number(scenario.startingCapital),
-      recurringContribution: Number(scenario.recurringContribution),
-      contributionFrequency: scenario.contributionFrequency as ContributionFrequency,
-      expectedAnnualReturn: Number(scenario.expectedAnnualReturn),
-      durationYears: scenario.durationYears,
-      inflationRate: Number(scenario.inflationRate),
-      annualContributionGrowth: Number(scenario.annualContributionGrowth),
-    });
-    const finalProjection = projection.at(-1);
-    if (!finalProjection || finalProjection.nominalValue <= 0 || finalProjection.nominalValue > 999_999_999_999_999) {
-      throw new BadRequestException('The projected target is outside the supported goal amount range.');
-    }
-    const targetDate = addYearsToDate(new Date(`${toDateOnly(new Date())}T00:00:00.000Z`), scenario.durationYears);
     try {
       await db.$transaction(async tx => {
-        const goal = await tx.financialGoal.create({
-          data: {
-            spaceId: membership.spaceId,
-            name: scenario.name,
-            description: 'Scenario projection target; actual results may differ and investment returns are not guaranteed.',
-            currencyCode: scenario.currencyCode,
-            targetAmount: finalProjection.nominalValue.toFixed(4),
-            targetDate,
-            createdBy: user.id,
-          },
-        });
-        await tx.financialPlan.create({
-          data: {
-            spaceId: membership.spaceId,
-            scenarioId: scenario.id,
-            goalId: goal.id,
-            name: scenario.name,
-            currencyCode: scenario.currencyCode,
-            startingCapital: scenario.startingCapital,
-            recurringContribution: scenario.recurringContribution,
-            contributionFrequency: scenario.contributionFrequency,
-            expectedAnnualReturn: scenario.expectedAnnualReturn,
-            durationYears: scenario.durationYears,
-            inflationRate: scenario.inflationRate,
-            annualContributionGrowth: scenario.annualContributionGrowth,
-            projectedTarget: finalProjection.nominalValue.toFixed(4),
-            createdBy: user.id,
-          },
-        });
+        await createPlanFromScenario(tx, scenario, user.id);
         await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'SCENARIO_CONVERTED_TO_PLAN' } });
       });
     } catch (error) {

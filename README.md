@@ -16,13 +16,13 @@ The supplied documents are preserved as the project baseline. The Phase 1 founda
 - Deterministic financial calculations use decimal arithmetic and PostgreSQL NUMERIC values.
 - Financial records belong to a Financial Space, with authorization enforced before access.
 - Personal information remains private when a user joins a household; sharing requires explicit permission.
-- AI explains validated facts and proposes alternatives. Users approve or modify plans.
-- Core records and calculations remain available during AI-provider outages.
+- Financial insights use transparent, deterministic rules over validated records. Users decide whether to act.
+- Financial records and calculations do not depend on external AI services.
 - The MVP excludes custody, money transfers, investment execution, bank/Mobile Money synchronization, statement imports, and automatic market-price feeds.
 
 ## Architecture baseline
 
-TypeScript modular monolith with a Next.js PWA, NestJS API and worker, PostgreSQL, Prisma, Redis/BullMQ, pnpm workspaces, Turborepo, and Docker. Shared packages separate financial calculations, analytics, authorization, validation, and AI orchestration.
+TypeScript modular monolith with a Next.js PWA, NestJS API and worker, PostgreSQL, Prisma, Redis/BullMQ, pnpm workspaces, Turborepo, and Docker. Shared packages separate financial calculations, analytics, authorization, validation, and deterministic financial reviews.
 
 Direct dependency versions are pinned in package manifests and dependency resolution is recorded in `pnpm-lock.yaml`. CI and Docker builds require this lockfile with frozen installation. The implementation targets Node 24, Next.js 16, NestJS 12, Prisma 7, and BullMQ 6.
 
@@ -34,7 +34,7 @@ Direct dependency versions are pinned in package manifests and dependency resolu
 4. Investments: accounts, transactions, manual and quantity × price valuations, contractual fixed-deposit interest, and maturity payouts.
 5. Portfolio intelligence: independently verified deterministic analytics and explainable portfolio metrics.
 6. Scenario planning: projections, assumptions, comparisons, and plan conversion.
-7. AI financial intelligence: profile snapshots, rules, strategies, feedback, and approved plans.
+7. Rule-based financial reviews: profile snapshots, transparent rules, possible strategies, user feedback, and goal-linked plans.
 8. Household finance: roles, invitations, ownership, dependants, and selective sharing.
 9. Engagement: achievements, routines, and notification preferences.
 10. Currency and discovery: historical FX and verified external provider directory.
