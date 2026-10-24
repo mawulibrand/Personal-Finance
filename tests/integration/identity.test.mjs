@@ -27,6 +27,24 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(login.status, 201);
   assert.ok(login.cookie);
   assert.equal((await request('auth/me', undefined, login.cookie)).body.canManageFinancialRules, false);
+  const notificationPreferencesPath = 'notifications/preferences';
+  const initialNotificationPreferences = await request(notificationPreferencesPath, undefined, login.cookie);
+  assert.equal(initialNotificationPreferences.status, 200);
+  assert.equal(initialNotificationPreferences.body.paydayInApp, false);
+  assert.equal(initialNotificationPreferences.body.maturityEmail, false);
+  assert.equal((await request(notificationPreferencesPath)).status, 401);
+  assert.equal((await request(notificationPreferencesPath, { ...initialNotificationPreferences.body, unexpected: true }, login.cookie)).status, 400);
+  const savedNotificationPreferences = await request(notificationPreferencesPath, {
+    paydayInApp: true,
+    paydayEmail: false,
+    maturityInApp: false,
+    maturityEmail: true,
+    monthlyReviewInApp: false,
+    monthlyReviewEmail: false,
+  }, login.cookie);
+  assert.equal(savedNotificationPreferences.status, 201);
+  assert.equal(savedNotificationPreferences.body.paydayInApp, true);
+  assert.equal(savedNotificationPreferences.body.maturityEmail, true);
   assert.equal((await request('admin/financial-rules', undefined, login.cookie)).status, 403);
   assert.equal((await request('admin/financial-rules')).status, 401);
   const configuredAdminEmail = process.env.FINANCIAL_RULE_ADMIN_TEST_EMAIL;
@@ -463,6 +481,10 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   await request('auth/register', { name: 'Bob', email: secondEmail, password });
   await request('auth/verify', { token: await emailToken(secondEmail, 'Verify your email') });
   const bob = await request('auth/login', { email: secondEmail, password });
+  const bobNotificationPreferences = await request(notificationPreferencesPath, undefined, bob.cookie);
+  assert.equal(bobNotificationPreferences.status, 200);
+  assert.equal(bobNotificationPreferences.body.paydayInApp, false);
+  assert.equal(bobNotificationPreferences.body.maturityEmail, false);
   assert.equal((await request(path, undefined, bob.cookie)).status, 404);
   assert.equal((await request(categoryPath, undefined, bob.cookie)).status, 404);
   assert.equal((await request(incomePath, undefined, bob.cookie)).status, 404);
@@ -513,6 +535,9 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   }, login.cookie);
   assert.equal(dependant.status, 201);
   assert.equal(dependant.body.dateOfBirth, '2015-04-12');
+  assert.equal((await request(`spaces/${spaces.body[0].id}/goals`, {
+    name: 'Cross-space dependant goal', targetAmount: '50', dependantId: dependant.body.id,
+  }, login.cookie)).status, 400);
   assert.equal((await request(`spaces/${householdId}/dependants`, {
     name: 'Future date', relationship: 'Child', dateOfBirth: '2999-01-01',
   }, login.cookie)).status, 400);
@@ -557,11 +582,15 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   const householdGoalsPath = `spaces/${householdId}/goals`;
   const householdGoal = await request(householdGoalsPath, {
     name: 'Household education fund', targetAmount: '1000', currencyCode: 'GHS', targetDate: '2030-12-31',
+    dependantId: dependant.body.id,
   }, bob.cookie);
   assert.equal(householdGoal.status, 201);
+  assert.equal(householdGoal.body.dependant.id, dependant.body.id);
   assert.equal((await request(`${householdGoalsPath}/${householdGoal.body.id}/contributions`, {
     type: 'CONTRIBUTION', amount: '25', contributionDate: receivedDate,
   }, bob.cookie)).status, 201);
+  const householdGoals = await request(householdGoalsPath, undefined, bob.cookie);
+  assert.equal(householdGoals.body.goals.find(goal => goal.id === householdGoal.body.id).dependant.name, 'Taylor');
   const householdBudgetPath = `spaces/${householdId}/budgets`;
   const householdCategories = await request(`spaces/${householdId}/categories`, undefined, bob.cookie);
   const householdExpenseCategory = householdCategories.body.find(category => category.type === 'EXPENSE');
@@ -578,6 +607,16 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal(householdDashboard.body.expenses.total, '75');
   assert.equal(householdDashboard.body.budget.remaining, '225');
   const householdNetWorth = await request(`spaces/${householdId}/net-worth`, undefined, login.cookie);
+  const householdReport = await request(`spaces/${householdId}/household/report?month=${householdMonth}`, undefined, login.cookie);
+  assert.equal(householdReport.status, 200);
+  assert.equal(householdReport.body.monthly.income.total, '0');
+  assert.equal(householdReport.body.monthly.expenses.total, '75');
+  assert.equal(householdReport.body.monthly.budget.remaining, '225');
+  assert.equal(householdReport.body.netWorth.current.find(item => item.currencyCode === 'GHS').netWorth, '150');
+  const dependantGoalSummary = householdReport.body.goalsByDependant.find(item => item.dependant?.id === dependant.body.id);
+  assert.equal(dependantGoalSummary.goalCount, 1);
+  assert.equal(dependantGoalSummary.currencies[0].currentAmount, '25');
+  assert.equal((await request(`spaces/${spaces.body[0].id}/household/report`, undefined, login.cookie)).status, 404);
   assert.equal(householdNetWorth.status, 200);
   assert.equal(householdNetWorth.body.current.find(item => item.currencyCode === 'GHS').netWorth, '150');
   const ownerHouseholdShare = householdNetWorth.body.ownership.memberShares.find(item => item.owner.id === ownerUserId);
@@ -631,12 +670,15 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/shares/${bobShare.body.id}/revoke`, {}, bob.cookie)).status, 201);
   assert.deepEqual((await request(householdSharedItemsPath, undefined, bob.cookie)).body, []);
   assert.equal((await request(`spaces/${householdId}/dependants/${dependant.body.id}/remove`, {}, login.cookie)).status, 201);
+  const goalAfterDependantRemoval = await request(householdGoalsPath, undefined, login.cookie);
+  assert.equal(goalAfterDependantRemoval.body.goals.find(goal => goal.id === householdGoal.body.id).dependant, null);
   assert.equal((await request(`${householdPath.replace('/household', '')}/household-members/${memberToUpdate.id}/remove`, {}, login.cookie)).status, 201);
   const householdAfterBobLeaves = await request(`spaces/${householdId}/net-worth`, undefined, login.cookie);
   const formerBobShare = householdAfterBobLeaves.body.ownership.memberShares.find(item => item.owner.id === bobUserId);
   assert.equal(householdAfterBobLeaves.body.current.find(item => item.currencyCode === 'GHS').netWorth, '150');
   assert.equal(formerBobShare.owner.isCurrentMember, false);
   assert.equal(formerBobShare.currencies[0].netWorth, '50');
+  assert.equal((await request(`spaces/${householdId}/household/report`, undefined, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${householdId}/ownership`, {
     entityType: 'SAVINGS_ACCOUNT',
     entityId: householdSavings.body.id,

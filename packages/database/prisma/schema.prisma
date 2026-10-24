@@ -194,7 +194,21 @@ model User {
   createdDependants Dependant[] @relation("DependantCreator")
   createdFinancialShares SharedFinancialItem[] @relation("FinancialShareCreator")
   householdOwnershipAllocations HouseholdOwnershipAllocation[]
+  notificationPreferences NotificationPreference?
   personalSpace FinancialSpace? @relation("PersonalOwner")
+}
+model NotificationPreference {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+  paydayInApp Boolean @default(false)
+  paydayEmail Boolean @default(false)
+  maturityInApp Boolean @default(false)
+  maturityEmail Boolean @default(false)
+  monthlyReviewInApp Boolean @default(false)
+  monthlyReviewEmail Boolean @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 model FinancialSpace {
   id String @id @default(uuid()) @db.Uuid
@@ -262,6 +276,7 @@ model Dependant {
   updatedAt DateTime @updatedAt @db.Timestamptz
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   creator User @relation("DependantCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  goals FinancialGoal[]
   @@index([spaceId, name])
 }
 model SharedFinancialItem {
@@ -541,6 +556,7 @@ model LiabilityPayment {
 model FinancialGoal {
   id String @id @default(uuid()) @db.Uuid
   spaceId String @db.Uuid
+  dependantId String? @db.Uuid
   name String
   description String?
   currencyCode String @default("GHS") @db.Char(3)
@@ -550,11 +566,13 @@ model FinancialGoal {
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  dependant Dependant? @relation(fields: [dependantId], references: [id], onDelete: SetNull)
   creator User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   contributions GoalContribution[]
   paydayRoutineActions PaydayRoutineAction[]
   financialPlan FinancialPlan?
   @@index([spaceId, createdAt])
+  @@index([dependantId])
 }
 model GoalContribution {
   id String @id @default(uuid()) @db.Uuid

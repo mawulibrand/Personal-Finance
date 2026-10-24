@@ -35,6 +35,14 @@ const financialRuleAdminEmails = new Set((process.env.FINANCIAL_RULE_ADMIN_EMAIL
   .map(value => value.trim().toLowerCase())
   .filter(Boolean));
 const isFinancialRuleAdmin = (user: { email: string }) => financialRuleAdminEmails.has(user.email.toLowerCase());
+const notificationPreferenceInput = z.object({
+  paydayInApp: z.boolean(),
+  paydayEmail: z.boolean(),
+  maturityInApp: z.boolean(),
+  maturityEmail: z.boolean(),
+  monthlyReviewInApp: z.boolean(),
+  monthlyReviewEmail: z.boolean(),
+}).strict();
 const householdSpaceInput = z.object({
   name: z.string().trim().min(1).max(100),
   baseCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default('GHS'),
@@ -155,6 +163,7 @@ const financialGoalInput = z.object({
   currencyCode: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
   targetAmount: amount,
   targetDate: dateOnly.optional(),
+  dependantId: z.string().uuid().optional(),
 }).strict();
 const goalContributionInput = z.object({
   type: z.enum(['CONTRIBUTION', 'WITHDRAWAL']),
@@ -653,6 +662,48 @@ class Api {
     return { message: 'Password changed. Please sign in again.' };
   }
   @Get('auth/me') async me(@Req() req: Request) { return safeUser(await this.identity.user(req)); }
+  @Get('notifications/preferences') async notificationPreferences(@Req() req: Request) {
+    const user = await this.identity.user(req);
+    const preferences = await db.notificationPreference.findUnique({ where: { userId: user.id } });
+    return preferences ? {
+      paydayInApp: preferences.paydayInApp,
+      paydayEmail: preferences.paydayEmail,
+      maturityInApp: preferences.maturityInApp,
+      maturityEmail: preferences.maturityEmail,
+      monthlyReviewInApp: preferences.monthlyReviewInApp,
+      monthlyReviewEmail: preferences.monthlyReviewEmail,
+      updatedAt: preferences.updatedAt.toISOString(),
+    } : {
+      paydayInApp: false,
+      paydayEmail: false,
+      maturityInApp: false,
+      maturityEmail: false,
+      monthlyReviewInApp: false,
+      monthlyReviewEmail: false,
+      updatedAt: null,
+    };
+  }
+  @Post('notifications/preferences') async updateNotificationPreferences(@Req() req: Request, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const input = validate(notificationPreferenceInput, body);
+    const preferences = await db.notificationPreference.upsert({
+      where: { userId: user.id },
+      create: { userId: user.id, ...input },
+      update: input,
+    });
+    await db.auditEvent.create({
+      data: { actorUserId: user.id, action: 'NOTIFICATION_PREFERENCES_UPDATED' },
+    });
+    return {
+      paydayInApp: preferences.paydayInApp,
+      paydayEmail: preferences.paydayEmail,
+      maturityInApp: preferences.maturityInApp,
+      maturityEmail: preferences.maturityEmail,
+      monthlyReviewInApp: preferences.monthlyReviewInApp,
+      monthlyReviewEmail: preferences.monthlyReviewEmail,
+      updatedAt: preferences.updatedAt.toISOString(),
+    };
+  }
   @Get('admin/financial-rules') async financialRules(@Req() req: Request) {
     const user = await this.identity.user(req);
     if (!isFinancialRuleAdmin(user)) throw new ForbiddenException('You do not have permission to manage financial review rules.');
@@ -1180,6 +1231,105 @@ class Api {
           assets: currency.assets.toString(),
           liabilities: currency.liabilities.toString(),
           netWorth: currency.netWorth.toString(),
+        })),
+      })),
+    };
+  }
+  @Get('spaces/:id/household/report') async householdReport(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Query('month') month?: string,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    const selectedMonth = validate(monthPeriod.default(currentMonth()), month);
+    const snapshotDate = new Date(`${toDateOnly(new Date())}T00:00:00.000Z`);
+    const [monthly, currentNetWorth, ownership, goals] = await Promise.all([
+      this.dashboard(req, id, selectedMonth),
+      calculateNetWorth(membership.spaceId, snapshotDate, membership.space.baseCurrency),
+      this.householdOwnershipSummary(membership.spaceId, snapshotDate),
+      db.financialGoal.findMany({
+        where: { spaceId: membership.spaceId },
+        include: {
+          dependant: { select: { id: true, name: true, relationship: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
+      }),
+    ]);
+    const contributions = goals.length ? await db.goalContribution.groupBy({
+      by: ['goalId', 'type'],
+      where: { goalId: { in: goals.map(goal => goal.id) } },
+      _sum: { amount: true },
+    }) : [];
+    const contributionAmounts = new Map(contributions.map(item => [
+      `${item.goalId}:${item.type}`,
+      item._sum.amount?.toString() ?? '0',
+    ]));
+    const goalViews = goals.map(goal => {
+      const currentAmount = subtractDecimals(
+        contributionAmounts.get(`${goal.id}:CONTRIBUTION`) ?? '0',
+        contributionAmounts.get(`${goal.id}:WITHDRAWAL`) ?? '0',
+      );
+      const completed = decimalToUnits(currentAmount) >= decimalToUnits(goal.targetAmount.toString());
+      return {
+        id: goal.id,
+        name: goal.name,
+        currencyCode: goal.currencyCode.trim(),
+        targetAmount: goal.targetAmount.toString(),
+        currentAmount,
+        remainingAmount: completed ? '0' : subtractDecimals(goal.targetAmount.toString(), currentAmount),
+        progressPercent: Math.min(100, Math.max(0, Number(currentAmount) / Number(goal.targetAmount.toString()) * 100)),
+        targetDate: goal.targetDate ? toDateOnly(goal.targetDate) : null,
+        dependant: goal.dependant,
+      };
+    });
+    const goalsByDependant = new Map<string, {
+      dependant: { id: string; name: string; relationship: string } | null;
+      goalCount: number;
+      currencies: Map<string, { targetAmount: string; currentAmount: string; remainingAmount: string }>;
+    }>();
+    for (const goal of goalViews) {
+      const dependantKey = goal.dependant?.id ?? 'household';
+      let group = goalsByDependant.get(dependantKey);
+      if (!group) {
+        group = { dependant: goal.dependant, goalCount: 0, currencies: new Map() };
+        goalsByDependant.set(dependantKey, group);
+      }
+      group.goalCount += 1;
+      const currency = group.currencies.get(goal.currencyCode) ?? {
+        targetAmount: '0',
+        currentAmount: '0',
+        remainingAmount: '0',
+      };
+      currency.targetAmount = addDecimals(currency.targetAmount, goal.targetAmount);
+      currency.currentAmount = addDecimals(currency.currentAmount, goal.currentAmount);
+      currency.remainingAmount = addDecimals(currency.remainingAmount, goal.remainingAmount);
+      group.currencies.set(goal.currencyCode, currency);
+    }
+    return {
+      month: selectedMonth,
+      baseCurrency: membership.space.baseCurrency.trim(),
+      monthly: {
+        status: monthly.status,
+        income: monthly.income,
+        expenses: monthly.expenses,
+        netCashFlow: monthly.netCashFlow,
+        budget: monthly.budget,
+      },
+      netWorth: {
+        snapshotDate: toDateOnly(snapshotDate),
+        current: currentNetWorth,
+        ownership,
+      },
+      goals: goalViews,
+      goalsByDependant: [...goalsByDependant.entries()].map(([id, group]) => ({
+        id,
+        dependant: group.dependant,
+        goalCount: group.goalCount,
+        currencies: [...group.currencies.entries()].map(([currencyCode, amounts]) => ({
+          currencyCode,
+          ...amounts,
         })),
       })),
     };
@@ -2941,7 +3091,10 @@ class Api {
     const membership = await this.spaceMembership(user.id, id);
     const goals = await db.financialGoal.findMany({
       where: { spaceId: membership.spaceId },
-      include: { contributions: { orderBy: [{ contributionDate: 'desc' }, { createdAt: 'desc' }], take: 10 } },
+      include: {
+        contributions: { orderBy: [{ contributionDate: 'desc' }, { createdAt: 'desc' }], take: 10 },
+        dependant: { select: { id: true, name: true, relationship: true } },
+      },
       orderBy: [{ createdAt: 'desc' }, { name: 'asc' }],
     });
     const aggregates = goals.length ? await db.goalContribution.groupBy({
@@ -2970,6 +3123,7 @@ class Api {
           progressPercent: Math.min(100, Math.max(0, ratio * 100)),
           targetDate: goal.targetDate ? toDateOnly(goal.targetDate) : null,
           isCompleted: completed,
+          dependant: goal.dependant,
           contributions: goal.contributions.map(contribution => ({
             id: contribution.id,
             type: contribution.type,
@@ -2986,10 +3140,21 @@ class Api {
     const membership = await this.spaceMembership(user.id, id);
     if (membership.role === 'VIEWER') throw new ForbiddenException('You do not have permission to manage goals in this space.');
     const input = validate(financialGoalInput, body);
+    if (input.dependantId) {
+      if (membership.space.type !== 'HOUSEHOLD') {
+        throw new BadRequestException('Only Household goals can be linked to a dependant.');
+      }
+      const dependant = await db.dependant.findFirst({
+        where: { id: input.dependantId, spaceId: membership.spaceId },
+        select: { id: true },
+      });
+      if (!dependant) throw new BadRequestException('Choose a dependant in this Household Space.');
+    }
     const goal = await db.$transaction(async tx => {
       const created = await tx.financialGoal.create({
         data: {
           spaceId: membership.spaceId,
+          dependantId: input.dependantId,
           name: input.name,
           description: input.description,
           currencyCode: input.currencyCode ?? membership.space.baseCurrency,
@@ -3012,6 +3177,10 @@ class Api {
       progressPercent: 0,
       targetDate: goal.targetDate ? toDateOnly(goal.targetDate) : null,
       isCompleted: false,
+      dependant: input.dependantId ? await db.dependant.findUnique({
+        where: { id: input.dependantId },
+        select: { id: true, name: true, relationship: true },
+      }) : null,
       contributions: [],
     };
   }

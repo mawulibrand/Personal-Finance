@@ -85,16 +85,18 @@ Implement:
 •	selective Personal sharing;
 •	household goals;
 •	household budgets;
-•	household net worth.
+•	household net worth and monthly financial reports;
+•	dependant-linked goal tracking.
 Acceptance:
 Joining a household exposes no Personal financial information without explicit sharing.
 Household net worth counts shared-space assets and liabilities once, separately from Personal data. Ownership allocations for supported Household assets and liabilities total 100%; member-level shares remain attributed to former members if they leave.
+Household reports preserve original currencies and summarize goal progress by dependant without including Personal Space records.
 Phase 9 — Engagement
 Implement:
+•	per-user, opt-in notification preferences for email and in-app channels;
 •	achievements;
 •	levels;
 •	streaks;
-•	notification preferences;
 •	email;
 •	in-app notifications;
 •	PWA push;
@@ -102,6 +104,7 @@ Implement:
 •	maturity reminders.
 Acceptance:
 Financial routines work without encouraging unnecessary risk or excessive financial activity.
+Notification preferences are private to each user, disabled by default, and do not imply notification delivery until the relevant delivery feature is implemented.
 Phase 10 — Currency & Discovery
 Implement:
 •	currencies;

@@ -28,6 +28,84 @@ export async function api(path: string, body?: unknown) {
   return result;
 }
 type Mode = 'login' | 'register' | 'forgot' | 'verify' | 'reset';
+type NotificationPreferencesView = {
+  paydayInApp: boolean;
+  paydayEmail: boolean;
+  maturityInApp: boolean;
+  maturityEmail: boolean;
+  monthlyReviewInApp: boolean;
+  monthlyReviewEmail: boolean;
+  updatedAt: string | null;
+};
+export function NotificationPreferences() {
+  const [preferences, setPreferences] = useState<NotificationPreferencesView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    let active = true;
+    void api('notifications/preferences').then((result: NotificationPreferencesView) => {
+      if (active) setPreferences(result);
+    }).catch(e => {
+      if (active) setError(e instanceof Error ? e.message : 'Unable to load notification preferences.');
+    });
+    return () => { active = false; };
+  }, []);
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!preferences) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const saved = await api('notifications/preferences', {
+        paydayInApp: preferences.paydayInApp,
+        paydayEmail: preferences.paydayEmail,
+        maturityInApp: preferences.maturityInApp,
+        maturityEmail: preferences.maturityEmail,
+        monthlyReviewInApp: preferences.monthlyReviewInApp,
+        monthlyReviewEmail: preferences.monthlyReviewEmail,
+      }) as NotificationPreferencesView;
+      setPreferences(saved);
+      setMessage('Notification preferences saved.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to save notification preferences.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  function toggle(key: keyof Omit<NotificationPreferencesView, 'updatedAt'>, checked: boolean) {
+    setPreferences(current => current ? { ...current, [key]: checked } : current);
+  }
+  const options = [
+    { label: 'Payday routine reminders', inApp: 'paydayInApp', email: 'paydayEmail' },
+    { label: 'Investment maturity reminders', inApp: 'maturityInApp', email: 'maturityEmail' },
+    { label: 'Monthly financial review reminders', inApp: 'monthlyReviewInApp', email: 'monthlyReviewEmail' },
+  ] as const;
+  return <main className="dashboard"><section className={`${workspaceStyles.page} ${workspaceStyles.dashboard}`}>
+    <p className="eyebrow">ACCOUNT SETTINGS</p><h1>Notification preferences</h1>
+    <p className="muted">Choose which future reminders you want to receive in-app or by email. Preferences are private to your account and start disabled. Saving preferences does not send notifications; delivery will be added separately.</p>
+    {message && <p className="notice" role="status">{message}</p>}
+    {error && <p className="error" role="alert">{error}</p>}
+    <section className={workspaceStyles.panel}>
+      {!preferences ? <p role="status">Loading preferences…</p> : <form onSubmit={event => void save(event)}>
+        <div className={workspaceStyles.panelHeading}><div><p className="eyebrow">OPTIONAL REMINDERS</p><h2>Delivery choices</h2></div></div>
+        <div role="table" aria-label="Notification delivery preferences">
+          <div role="row" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 100px 100px', gap: 12, padding: '14px 0', fontWeight: 700 }}>
+            <span role="columnheader">Reminder type</span><span role="columnheader">In-app</span><span role="columnheader">Email</span>
+          </div>
+          {options.map(option => <div role="row" key={option.label} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 100px 100px', gap: 12, alignItems: 'center', padding: '14px 0', borderTop: '1px solid #edf0e9' }}>
+            <span role="rowheader">{option.label}</span>
+            <label><span className="sr-only">{option.label} in-app</span><input type="checkbox" checked={preferences[option.inApp]} onChange={event => toggle(option.inApp, event.currentTarget.checked)} /></label>
+            <label><span className="sr-only">{option.label} email</span><input type="checkbox" checked={preferences[option.email]} onChange={event => toggle(option.email, event.currentTarget.checked)} /></label>
+          </div>)}
+        </div>
+        <button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save preferences'}</button>
+        {preferences.updatedAt && <p className="muted">Last saved {new Date(preferences.updatedAt).toLocaleString()}.</p>}
+      </form>}
+    </section>
+  </section></main>;
+}
 const titles: Record<Mode, string> = { login: 'Welcome back.', register: 'Start with clarity.', forgot: 'Recover your account.', verify: 'Verify your email.', reset: 'Choose a new password.' };
 export function AuthForm({ mode }: { mode: Mode }) {
   const router = useRouter();
@@ -88,6 +166,7 @@ const workspaceLinks = [
   { href: '/scenarios', label: 'Scenario planning' },
   { href: '/financial-review', label: 'Financial review' },
   { href: '/household', label: 'Household' },
+  { href: '/notifications', label: 'Notifications' },
   { href: '/goals', label: 'Goals' },
   { href: '/net-worth', label: 'Net worth' },
   { href: '/payday', label: 'Payday routine' },
@@ -843,6 +922,7 @@ type GoalContribution = {
   contributionDate: string;
   description: string | null;
 };
+type GoalDependant = { id: string; name: string; relationship: string };
 type FinancialGoal = {
   id: string;
   name: string;
@@ -854,10 +934,13 @@ type FinancialGoal = {
   progressPercent: number;
   targetDate: string | null;
   isCompleted: boolean;
+  dependant: GoalDependant | null;
   contributions: GoalContribution[];
 };
 export function Goals() {
   const [spaceId, setSpaceId] = useState('');
+  const [isHousehold, setIsHousehold] = useState(false);
+  const [dependants, setDependants] = useState<GoalDependant[]>([]);
   const [goals, setGoals] = useState<FinancialGoal[] | null>(null);
   const [baseCurrency, setBaseCurrency] = useState('GHS');
   const [busy, setBusy] = useState(false);
@@ -867,8 +950,17 @@ export function Goals() {
     try {
       const spaces = await api('spaces');
       if (!spaces[0]) throw new Error('No financial space is available.');
-      const result = await api(`spaces/${spaces[0].id}/goals`);
-      if (active) { setSpaceId(spaces[0].id); setBaseCurrency(spaces[0].baseCurrency); setGoals(result.goals); }
+      const [result, household] = await Promise.all([
+        api(`spaces/${spaces[0].id}/goals`),
+        spaces[0].type === 'HOUSEHOLD' ? api(`spaces/${spaces[0].id}/household`) : Promise.resolve(null),
+      ]);
+      if (active) {
+        setSpaceId(spaces[0].id);
+        setBaseCurrency(spaces[0].baseCurrency);
+        setGoals(result.goals);
+        setIsHousehold(spaces[0].type === 'HOUSEHOLD');
+        setDependants(household?.dependants ?? []);
+      }
     } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load financial goals.'); }
   })(); return () => { active = false; }; }, []);
   async function reload() {
@@ -891,8 +983,10 @@ export function Goals() {
     };
     const description = String(form.get('description') ?? '').trim();
     const targetDate = String(form.get('targetDate') ?? '').trim();
+    const dependantId = String(form.get('dependantId') ?? '').trim();
     if (description) payload.description = description;
     if (targetDate) payload.targetDate = targetDate;
+    if (dependantId) payload.dependantId = dependantId;
     try { await api(`spaces/${spaceId}/goals`, payload); await reload(); formElement.reset(); setMessage('Financial goal created.'); }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to save this goal.'); }
     finally { setBusy(false); }
@@ -915,20 +1009,21 @@ export function Goals() {
     finally { setBusy(false); }
   }
   return <main className="dashboard"><section className={`${goalStyles.page} ${workspaceStyles.page}`}>
-    <p className="eyebrow">PERSONAL SPACE</p><h1>Financial goals</h1><p className="muted">Set targets and track your progress with dated contributions. These are tracking entries only; they do not move money between accounts.</p>
+    <p className="eyebrow">{isHousehold ? 'HOUSEHOLD SPACE' : 'PERSONAL SPACE'}</p><h1>Financial goals</h1><p className="muted">Set targets and track your progress with dated contributions. These are tracking entries only; they do not move money between accounts.</p>
     {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
     <section className={goalStyles.panel}><h2>Create a goal</h2><form className={goalStyles.goalForm} onSubmit={createGoal}>
       <label>Goal name<input name="name" required maxLength={100} placeholder="e.g. Emergency fund" /></label>
       <label>Target amount<input name="targetAmount" type="number" min="0.0001" step="0.0001" required /></label>
       <label>Currency<input name="currencyCode" required minLength={3} maxLength={3} pattern="[A-Za-z]{3}" defaultValue={baseCurrency} /></label>
       <label>Target date <span className={goalStyles.optional}>(optional)</span><input name="targetDate" type="date" /></label>
+      {isHousehold && <label>For dependant <span className={goalStyles.optional}>(optional)</span><select name="dependantId" defaultValue=""><option value="">Household-wide goal</option>{dependants.map(dependant => <option key={dependant.id} value={dependant.id}>{dependant.name} · {dependant.relationship}</option>)}</select></label>}
       <label className={goalStyles.fullWidth}>Description <span className={goalStyles.optional}>(optional)</span><input name="description" maxLength={500} placeholder="What are you saving for?" /></label>
       <button disabled={busy || !spaceId}>{busy ? 'Saving…' : 'Create goal'} <span aria-hidden="true">→</span></button>
     </form></section>
     <section className={goalStyles.panel}>
       <div className={goalStyles.summaryHeading}><div><p className="eyebrow">YOUR TARGETS</p><h2>Progress</h2></div></div>
       {goals === null ? <p role="status">Loading goals…</p> : goals.length === 0 ? <p className="muted">No goals yet. Create a target above to start tracking progress.</p> : <div className={goalStyles.goals}>{goals.map(goal => <article className={goalStyles.goal} key={goal.id}>
-        <div className={goalStyles.goalHeading}><div><span className="eyebrow">{goal.currencyCode}{goal.targetDate ? ` · TARGET ${goal.targetDate}` : ''}</span><h3>{goal.name}</h3>{goal.description && <p className="muted">{goal.description}</p>}</div><span className="tag">{goal.isCompleted ? 'COMPLETED' : 'IN PROGRESS'}</span></div>
+        <div className={goalStyles.goalHeading}><div><span className="eyebrow">{goal.currencyCode}{goal.targetDate ? ` · TARGET ${goal.targetDate}` : ''}{goal.dependant ? ` · FOR ${goal.dependant.name}` : ''}</span><h3>{goal.name}</h3>{goal.description && <p className="muted">{goal.description}</p>}</div><span className="tag">{goal.isCompleted ? 'COMPLETED' : 'IN PROGRESS'}</span></div>
         <div className={goalStyles.progressSummary}><strong>{money(goal.currentAmount, goal.currencyCode)}</strong><span>of {money(goal.targetAmount, goal.currencyCode)}</span><span>{money(goal.remainingAmount, goal.currencyCode)} remaining</span></div>
         <progress value={goal.progressPercent} max="100" aria-label={`${goal.name} progress`} />
         {!goal.isCompleted && <form className={goalStyles.contributionForm} onSubmit={event => void recordContribution(event, goal)}>
@@ -1936,6 +2031,27 @@ type HouseholdDetailsView = {
   invitations: Array<{ id: string; invitedEmail: string; role: HouseholdSpaceView['role']; expiresAt: string; createdAt: string }>;
   canManage: boolean;
 };
+type HouseholdReportView = {
+  month: string;
+  baseCurrency: string;
+  monthly: {
+    status: 'READY' | 'NOT_ENOUGH_DATA';
+    income: { total: string; count: number; excludedCurrencyCount: number };
+    expenses: { total: string; count: number; byCategory: Array<{ categoryId: string; category: string; total: string }> };
+    netCashFlow: string;
+    budget: { limit: string; spent: string; remaining: string; allocations: Array<{ categoryId: string; category: string; limit: string; spent: string; remaining: string }> };
+  };
+  netWorth: {
+    snapshotDate: string;
+    current: Array<{ currencyCode: string; assets: string; liabilities: string; netWorth: string }>;
+  };
+  goalsByDependant: Array<{
+    id: string;
+    dependant: { id: string; name: string; relationship: string } | null;
+    goalCount: number;
+    currencies: Array<{ currencyCode: string; targetAmount: string; currentAmount: string; remainingAmount: string }>;
+  }>;
+};
 type HouseholdAssetType = 'SAVINGS_ACCOUNT' | 'INVESTMENT' | 'LIABILITY';
 type HouseholdAssetChoice = { id: string; entityType: HouseholdAssetType; name: string; currencyCode: string; value: string | null };
 type HouseholdOwnershipView = {
@@ -1999,6 +2115,8 @@ export function HouseholdManagement() {
   const [households, setHouseholds] = useState<HouseholdSpaceView[]>([]);
   const [selectedHouseholdId, setSelectedHouseholdId] = useState('');
   const [details, setDetails] = useState<HouseholdDetailsView | null>(null);
+  const [householdReport, setHouseholdReport] = useState<HouseholdReportView | null>(null);
+  const [reportMonth, setReportMonth] = useState(localDate().slice(0, 7));
   const [sharedItems, setSharedItems] = useState<SharedPersonalItemView[]>([]);
   const [householdAssets, setHouseholdAssets] = useState<HouseholdAssetChoice[]>([]);
   const [ownership, setOwnership] = useState<HouseholdOwnershipView | null>(null);
@@ -2038,14 +2156,15 @@ export function HouseholdManagement() {
       ...goals.goals.map(item => ({ id: item.id, name: item.name, entityType: 'GOAL' as const })),
     ]);
   }
-  async function loadHousehold(householdId: string) {
-    const [household, shared, savings, investments, liabilities, ownershipView] = await Promise.all([
+  async function loadHousehold(householdId: string, month = reportMonth) {
+    const [household, shared, savings, investments, liabilities, ownershipView, report] = await Promise.all([
       api(`spaces/${householdId}/household`) as Promise<HouseholdDetailsView>,
       api(`spaces/${householdId}/shared-personal-items`) as Promise<SharedPersonalItemView[]>,
       api(`spaces/${householdId}/savings-accounts`) as Promise<{ accounts: Array<{ id: string; name: string; currencyCode: string; balance: string }> }>,
       api(`spaces/${householdId}/investments`) as Promise<{ accounts: Array<{ investments: Array<{ id: string; name: string; currencyCode: string; currentValue: string | null }> }> }>,
       api(`spaces/${householdId}/liabilities`) as Promise<{ liabilities: Array<{ id: string; name: string; currencyCode: string; outstandingBalance: string }> }>,
       api(`spaces/${householdId}/ownership`) as Promise<HouseholdOwnershipView>,
+      api(`spaces/${householdId}/household/report?month=${encodeURIComponent(month)}`) as Promise<HouseholdReportView>,
     ]);
     setDetails(household);
     setSharedItems(shared);
@@ -2056,6 +2175,7 @@ export function HouseholdManagement() {
     ];
     setHouseholdAssets(assets);
     setOwnership(ownershipView);
+    setHouseholdReport(report);
     setSelectedOwnershipAssetKey(current => assets.some(item => `${item.entityType}:${item.id}` === current) ? current : '');
   }
   useEffect(() => {
@@ -2090,11 +2210,12 @@ export function HouseholdManagement() {
   }, []);
   useEffect(() => {
     let active = true;
+    setHouseholdReport(null);
     if (selectedHouseholdId) void loadHousehold(selectedHouseholdId).catch(e => {
       if (active) setError(e instanceof Error ? e.message : 'Unable to load this household.');
     });
     return () => { active = false; };
-  }, [selectedHouseholdId]);
+  }, [selectedHouseholdId, reportMonth]);
 
   async function createHousehold(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2292,6 +2413,27 @@ export function HouseholdManagement() {
         <nav className={householdStyles.quickLinks} aria-label="Household finance sections">
           <Link href="/dashboard">Overview</Link><Link href="/income">Income</Link><Link href="/expenses">Expenses</Link><Link href="/budgets">Budgets</Link><Link href="/savings">Savings</Link><Link href="/investments">Investments</Link><Link href="/goals">Goals</Link><Link href="/liabilities">Liabilities</Link><Link href="/net-worth">Net worth</Link>
         </nav>
+      </section>
+      <section className={householdStyles.panel}>
+        <div className={householdStyles.heading}><div><p className="eyebrow">SHARED FINANCIAL SUMMARY</p><h2>Household report</h2></div><label>Monthly period<input type="month" value={reportMonth} onChange={event => { if (event.currentTarget.value) setReportMonth(event.currentTarget.value); }} /></label></div>
+        {!householdReport ? <p role="status">Loading household report…</p> : <>
+          <p className="muted">Monthly cash flow is shown in {householdReport.baseCurrency}. Assets, debts, goals, and ownership shares remain grouped by their original currencies. Personal Space records are not included.</p>
+          <div className={householdStyles.sharedGrid}>
+            <article className={householdStyles.sharedItem}><p className="eyebrow">{householdReport.month} · INCOME</p><h3>{money(householdReport.monthly.income.total, householdReport.baseCurrency)}</h3><p>{householdReport.monthly.income.count} recorded items</p></article>
+            <article className={householdStyles.sharedItem}><p className="eyebrow">{householdReport.month} · EXPENSES</p><h3>{money(householdReport.monthly.expenses.total, householdReport.baseCurrency)}</h3><p>{householdReport.monthly.expenses.count} recorded items</p></article>
+            <article className={householdStyles.sharedItem}><p className="eyebrow">NET CASH FLOW</p><h3>{money(householdReport.monthly.netCashFlow, householdReport.baseCurrency)}</h3><p>{householdReport.monthly.status === 'READY' ? 'Based on recorded household activity' : 'Not enough recorded activity for this period'}</p></article>
+            <article className={householdStyles.sharedItem}><p className="eyebrow">BUDGET REMAINING</p><h3>{money(householdReport.monthly.budget.remaining, householdReport.baseCurrency)}</h3><p>{money(householdReport.monthly.budget.spent, householdReport.baseCurrency)} spent of {money(householdReport.monthly.budget.limit, householdReport.baseCurrency)} allocated</p></article>
+          </div>
+          <div className={householdStyles.subsection}><h3>Net worth · {householdReport.netWorth.snapshotDate}</h3>
+            {!householdReport.netWorth.current.length ? <p className="muted">No valued Household assets or recorded liabilities yet.</p> : <ul className={householdStyles.list}>{householdReport.netWorth.current.map(item => <li key={item.currencyCode}><div><strong>{item.currencyCode}</strong><span>Assets {money(item.assets, item.currencyCode)} · Liabilities {money(item.liabilities, item.currencyCode)}</span></div><strong>{money(item.netWorth, item.currencyCode)}</strong></li>)}</ul>}
+          </div>
+          <div className={householdStyles.subsection}><h3>Goal progress by dependant</h3>
+            {!householdReport.goalsByDependant.length ? <p className="muted">No Household goals have been recorded.</p> : <div className={householdStyles.sharedGrid}>{householdReport.goalsByDependant.map(group => <article className={householdStyles.sharedItem} key={group.id}>
+              <p className="eyebrow">{group.goalCount} {group.goalCount === 1 ? 'GOAL' : 'GOALS'}</p><h3>{group.dependant ? `${group.dependant.name} · ${group.dependant.relationship}` : 'Household-wide goals'}</h3>
+              {group.currencies.map(currency => <p key={currency.currencyCode}><strong>{currency.currencyCode}</strong> · Progress {money(currency.currentAmount, currency.currencyCode)} of {money(currency.targetAmount, currency.currencyCode)} · {money(currency.remainingAmount, currency.currencyCode)} remaining</p>)}
+            </article>)}</div>}
+          </div>
+        </>}
       </section>
       <section className={householdStyles.panel}>
         <h2>Household ownership and net worth</h2>
