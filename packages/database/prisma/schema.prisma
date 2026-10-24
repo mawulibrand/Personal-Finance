@@ -144,6 +144,22 @@ enum RecommendationFeedback {
   NOT_HELPFUL
   NOT_APPLICABLE
 }
+enum SharedFinancialEntityType {
+  SAVINGS_ACCOUNT
+  INVESTMENT
+  LIABILITY
+  GOAL
+}
+enum FinancialSharePermission {
+  BALANCE_ONLY
+  SUMMARY
+  FULL_READ
+}
+enum HouseholdOwnershipEntityType {
+  SAVINGS_ACCOUNT
+  INVESTMENT
+  LIABILITY
+}
 model User {
   id String @id @default(uuid()) @db.Uuid
   email String @unique
@@ -174,6 +190,10 @@ model User {
   financialPlans FinancialPlan[]
   financialReviews FinancialProfileSnapshot[]
   strategyResponses RecommendationStrategy[]
+  createdHouseholdInvitations HouseholdInvitation[] @relation("HouseholdInvitationCreator")
+  createdDependants Dependant[] @relation("DependantCreator")
+  createdFinancialShares SharedFinancialItem[] @relation("FinancialShareCreator")
+  householdOwnershipAllocations HouseholdOwnershipAllocation[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model FinancialSpace {
@@ -200,6 +220,11 @@ model FinancialSpace {
   scenarios Scenario[]
   financialPlans FinancialPlan[]
   financialReviews FinancialProfileSnapshot[]
+  householdInvitations HouseholdInvitation[]
+  dependants Dependant[]
+  personalFinancialShares SharedFinancialItem[] @relation("FinancialShareSourceSpace")
+  receivedFinancialShares SharedFinancialItem[] @relation("FinancialShareTargetSpace")
+  ownershipAllocations HouseholdOwnershipAllocation[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
@@ -209,6 +234,66 @@ model Membership {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   @@unique([userId, spaceId])
+}
+model HouseholdInvitation {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  invitedEmail String @db.VarChar(254)
+  role Role
+  tokenHash String @unique
+  expiresAt DateTime @db.Timestamptz
+  acceptedAt DateTime? @db.Timestamptz
+  revokedAt DateTime? @db.Timestamptz
+  invitedBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  inviter User @relation("HouseholdInvitationCreator", fields: [invitedBy], references: [id], onDelete: Restrict)
+  @@index([spaceId, invitedEmail, createdAt])
+  @@index([expiresAt, acceptedAt, revokedAt])
+}
+model Dependant {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  name String
+  relationship String
+  dateOfBirth DateTime? @db.Date
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator User @relation("DependantCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  @@index([spaceId, name])
+}
+model SharedFinancialItem {
+  id String @id @default(uuid()) @db.Uuid
+  sourceSpaceId String @db.Uuid
+  entityType SharedFinancialEntityType
+  entityId String @db.Uuid
+  targetHouseholdSpaceId String @db.Uuid
+  sharedBy String @db.Uuid
+  permission FinancialSharePermission
+  createdAt DateTime @default(now()) @db.Timestamptz
+  revokedAt DateTime? @db.Timestamptz
+  sourceSpace FinancialSpace @relation("FinancialShareSourceSpace", fields: [sourceSpaceId], references: [id], onDelete: Cascade)
+  targetHouseholdSpace FinancialSpace @relation("FinancialShareTargetSpace", fields: [targetHouseholdSpaceId], references: [id], onDelete: Cascade)
+  sharer User @relation("FinancialShareCreator", fields: [sharedBy], references: [id], onDelete: Restrict)
+  @@unique([sourceSpaceId, entityType, entityId, targetHouseholdSpaceId])
+  @@index([targetHouseholdSpaceId, revokedAt])
+}
+model HouseholdOwnershipAllocation {
+  id String @id @default(uuid()) @db.Uuid
+  spaceId String @db.Uuid
+  entityType HouseholdOwnershipEntityType
+  entityId String @db.Uuid
+  ownerUserId String @db.Uuid
+  percentage Decimal @db.Decimal(7, 4)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  space FinancialSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  @@unique([spaceId, entityType, entityId, ownerUserId])
+  @@index([spaceId, entityType, entityId])
+  @@index([ownerUserId])
 }
 model Session {
   id String @id @default(uuid()) @db.Uuid

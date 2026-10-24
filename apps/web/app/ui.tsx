@@ -16,10 +16,15 @@ import paydayStyles from './payday.module.css';
 import investmentStyles from './investments.module.css';
 import scenarioStyles from './scenario-planning.module.css';
 import insightStyles from './financial-insights.module.css';
+import householdStyles from './household.module.css';
 export async function api(path: string, body?: unknown) {
   const response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store' });
   const result = await response.json().catch(() => ({ message: 'The service is unavailable. Please try again.' }));
   if (!response.ok) throw new Error(result.message ?? 'Unable to complete this request.');
+  if (path === 'spaces' && Array.isArray(result) && typeof window !== 'undefined') {
+    const activeSpaceId = window.localStorage.getItem('pf_active_space_id');
+    if (activeSpaceId) return [...result].sort((left, right) => Number(right.id === activeSpaceId) - Number(left.id === activeSpaceId));
+  }
   return result;
 }
 type Mode = 'login' | 'register' | 'forgot' | 'verify' | 'reset';
@@ -82,6 +87,7 @@ const workspaceLinks = [
   { href: '/portfolio-intelligence', label: 'Portfolio intelligence' },
   { href: '/scenarios', label: 'Scenario planning' },
   { href: '/financial-review', label: 'Financial review' },
+  { href: '/household', label: 'Household' },
   { href: '/goals', label: 'Goals' },
   { href: '/net-worth', label: 'Net worth' },
   { href: '/payday', label: 'Payday routine' },
@@ -95,6 +101,19 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState('');
+  const [spaces, setSpaces] = useState<Array<{ id: string; name: string; type: 'PERSONAL' | 'HOUSEHOLD'; baseCurrency: string }>>([]);
+  const [activeSpaceId, setActiveSpaceId] = useState('');
+  useEffect(() => { let active = true; void api('spaces').then((result: Array<{ id: string; name: string; type: 'PERSONAL' | 'HOUSEHOLD'; baseCurrency: string }>) => {
+    if (!active) return;
+    setSpaces(result);
+    const savedId = window.localStorage.getItem('pf_active_space_id');
+    const chosen = result.find(space => space.id === savedId) ?? result.find(space => space.type === 'PERSONAL') ?? result[0];
+    if (chosen) {
+      setActiveSpaceId(chosen.id);
+      window.localStorage.setItem('pf_active_space_id', chosen.id);
+    }
+  }).catch(e => { if (active) setError(e instanceof Error ? e.message : 'Unable to load financial spaces.'); });
+  return () => { active = false; }; }, []);
   async function logout() {
     setError('');
     try { await api('auth/logout', {}); router.replace('/'); }
@@ -104,6 +123,16 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     <aside className={`${workspaceStyles.sidebar} ${menuOpen ? workspaceStyles.sidebarOpen : ''}`}>
       <Link className={workspaceStyles.brand} href="/dashboard" onClick={() => setMenuOpen(false)}><span aria-hidden="true">◈</span> Personal Finance</Link>
       <p className={workspaceStyles.navLabel}>YOUR MONEY</p>
+      {spaces.length > 1 && <label className={workspaceStyles.spacePicker}>Financial Space
+        <select aria-label="Active Financial Space" value={activeSpaceId} onChange={event => {
+          const nextSpaceId = event.currentTarget.value;
+          setActiveSpaceId(nextSpaceId);
+          window.localStorage.setItem('pf_active_space_id', nextSpaceId);
+          window.location.reload();
+        }}>
+          {spaces.map(space => <option key={space.id} value={space.id}>{space.type === 'PERSONAL' ? 'Personal · ' : 'Household · '}{space.name}</option>)}
+        </select>
+      </label>}
       <nav aria-label="Main navigation" className={workspaceStyles.nav}>
         {workspaceLinks.map(item => <Link key={item.href} href={item.href} aria-current={pathname === item.href ? 'page' : undefined} onClick={() => setMenuOpen(false)}>{item.label}</Link>)}
       </nav>
@@ -926,9 +955,12 @@ type NetWorthOverview = {
   baseCurrency: string;
   current: NetWorthCurrency[];
   snapshots: NetWorthSnapshot[];
+  ownership?: HouseholdOwnershipView;
 };
 export function NetWorth() {
   const [spaceId, setSpaceId] = useState('');
+  const [spaceName, setSpaceName] = useState('');
+  const [spaceType, setSpaceType] = useState<'PERSONAL' | 'HOUSEHOLD'>('PERSONAL');
   const [data, setData] = useState<NetWorthOverview | null>(null);
   const [snapshotDate, setSnapshotDate] = useState(localDate());
   const [busy, setBusy] = useState(false);
@@ -939,7 +971,13 @@ export function NetWorth() {
       const spaces = await api('spaces');
       if (!spaces[0]) throw new Error('No financial space is available.');
       const result = await api(`spaces/${spaces[0].id}/net-worth`);
-      if (active) { setSpaceId(spaces[0].id); setData(result); setSnapshotDate(result.snapshotDate); }
+      if (active) {
+        setSpaceId(spaces[0].id);
+        setSpaceName(spaces[0].name);
+        setSpaceType(spaces[0].type);
+        setData(result);
+        setSnapshotDate(result.snapshotDate);
+      }
     } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load net worth.'); }
   })(); return () => { active = false; }; }, []);
   async function reload() {
@@ -958,8 +996,8 @@ export function NetWorth() {
     finally { setBusy(false); }
   }
   return <main className="dashboard"><section className={`${netWorthStyles.page} ${workspaceStyles.page}`}>
-    <p className="eyebrow">PERSONAL SPACE · {data?.baseCurrency ?? 'GHS'}</p><h1>Net worth</h1>
-    <p className="muted">Your tracked savings and valued investments minus outstanding debt principal. Values stay separated by currency; no exchange-rate conversion is applied. Cash, property, and unvalued investments are not included.</p>
+    <p className="eyebrow">{spaceType === 'HOUSEHOLD' ? `HOUSEHOLD SPACE · ${spaceName}` : 'PERSONAL SPACE'} · {data?.baseCurrency ?? 'GHS'}</p><h1>Net worth</h1>
+    <p className="muted">{spaceType === 'HOUSEHOLD' ? 'This is the full value of tracked Household assets less outstanding Household debt, counted once and shown by currency. Member ownership shares appear separately below; Personal records are not included unless explicitly shared elsewhere.' : 'Your tracked savings and valued investments minus outstanding debt principal. Values stay separated by currency; no exchange-rate conversion is applied. Cash, property, and unvalued investments are not included.'}</p>
     {message && <p className="notice" role="status">{message}</p>}{error && <p className="error" role="alert">{error}</p>}
     <section className={netWorthStyles.panel}>
       <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">CURRENT POSITION</p><h2>As of {data?.snapshotDate ?? '—'}</h2></div></div>
@@ -967,6 +1005,15 @@ export function NetWorth() {
         <h3>{item.currencyCode}</h3><dl><div><dt>Tracked assets</dt><dd>{money(item.assets, item.currencyCode)}</dd></div><div><dt>Liabilities</dt><dd>{money(item.liabilities, item.currencyCode)}</dd></div><div className={netWorthStyles.net}><dt>Net worth</dt><dd>{money(item.netWorth, item.currencyCode)}</dd></div></dl>
       </article>)}</div>}
     </section>
+    {spaceType === 'HOUSEHOLD' && data?.ownership && <section className={netWorthStyles.panel}>
+      <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">OWNERSHIP SHARES</p><h2>Member-level amounts</h2></div></div>
+      <p className="muted">Each amount is the member’s share of Household-owned assets and liabilities as of {data.ownership.asOfDate}. Former members’ shares remain included and identified as historical owners.</p>
+      {!data.ownership.memberShares.length ? <p className="muted">Ownership shares have not been recorded for Household assets or liabilities yet.</p> : <div className={netWorthStyles.history}>{data.ownership.memberShares.map(member => <article className={netWorthStyles.snapshot} key={member.owner.id}>
+        <h3>{member.owner.name} · {member.owner.isCurrentMember ? 'Current member' : 'Former member'}</h3>
+        {member.currencies.map(item => <dl key={item.currencyCode}><dt>{item.currencyCode} assets</dt><dd>{money(item.assets, item.currencyCode)}</dd><dt>Liabilities</dt><dd>{money(item.liabilities, item.currencyCode)}</dd><dt>Net share</dt><dd>{money(item.netWorth, item.currencyCode)}</dd></dl>)}
+      </article>)}</div>}
+      {!!data.ownership.unallocated.length && <p className="muted">Some records have no ownership allocation yet. They are included in Household net worth, but not in the member-level amounts.</p>}
+    </section>}
     <section className={netWorthStyles.panel}>
       <div className={netWorthStyles.sectionHeading}><div><p className="eyebrow">HISTORY</p><h2>Save a snapshot</h2></div></div>
       <p className="muted">Snapshots use savings, liability, and investment records available on the selected date and are preserved as recorded. Only one snapshot can be saved per day.</p>
@@ -1652,17 +1699,35 @@ type FinancialReviewView = {
   profile: FinancialProfileView;
   strategies: FinancialStrategyView[];
 };
-type ReviewSpace = { id: string };
+type ReviewSpace = { id: string; baseCurrency: string };
+type FinancialRuleView = {
+  id: string;
+  code: string;
+  market: string;
+  metric: 'savingsRatePercent' | 'monthlyCashFlow' | 'emergencyFundMonths';
+  operator: 'LESS_THAN' | 'GREATER_THAN';
+  threshold: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  enabled: boolean;
+  updatedAt: string;
+};
+const financialRuleMetricLabels: Record<FinancialRuleView['metric'], string> = {
+  savingsRatePercent: 'Savings rate (%)',
+  monthlyCashFlow: 'Monthly cash flow (space currency)',
+  emergencyFundMonths: 'Emergency-fund coverage (months)',
+};
 export function FinancialReview() {
   const [space, setSpace] = useState<ReviewSpace | null>(null);
   const [reviews, setReviews] = useState<FinancialReviewView[]>([]);
+  const [financialRules, setFinancialRules] = useState<FinancialRuleView[]>([]);
+  const [canManageFinancialRules, setCanManageFinancialRules] = useState(false);
   const [selectedReviewId, setSelectedReviewId] = useState('');
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   async function loadReviews() {
-    const spaces = await api('spaces') as Array<ReviewSpace & { baseCurrency: string }>;
+    const spaces = await api('spaces') as ReviewSpace[];
     if (!spaces[0]) throw new Error('No financial space is available.');
     setSpace(spaces[0]);
     const result = await api(`spaces/${spaces[0].id}/financial-reviews`) as FinancialReviewView[];
@@ -1671,10 +1736,22 @@ export function FinancialReview() {
   }
   useEffect(() => { let active = true; (async () => {
     try {
-      const spaces = await api('spaces') as Array<ReviewSpace & { baseCurrency: string }>;
+      const [user, spaces] = await Promise.all([
+        api('auth/me') as Promise<{ canManageFinancialRules: boolean }>,
+        api('spaces') as Promise<ReviewSpace[]>,
+      ]);
       if (!spaces[0]) throw new Error('No financial space is available.');
-      const result = await api(`spaces/${spaces[0].id}/financial-reviews`) as FinancialReviewView[];
-      if (active) { setSpace(spaces[0]); setReviews(result); setSelectedReviewId(result[0]?.id ?? ''); }
+      const [result, rules] = await Promise.all([
+        api(`spaces/${spaces[0].id}/financial-reviews`) as Promise<FinancialReviewView[]>,
+        user.canManageFinancialRules ? api('admin/financial-rules') as Promise<FinancialRuleView[]> : Promise.resolve([]),
+      ]);
+      if (active) {
+        setSpace(spaces[0]);
+        setReviews(result);
+        setSelectedReviewId(result[0]?.id ?? '');
+        setCanManageFinancialRules(user.canManageFinancialRules);
+        setFinancialRules(rules);
+      }
     } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load financial reviews.'); }
   })(); return () => { active = false; }; }, []);
   const selectedReview = reviews.find(review => review.id === selectedReviewId) ?? reviews[0];
@@ -1732,6 +1809,22 @@ export function FinancialReview() {
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to convert this strategy into a plan.'); }
     finally { setBusy(false); }
   }
+  async function saveFinancialRule(event: FormEvent<HTMLFormElement>, rule: FinancialRuleView) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const update = {
+      enabled: form.get('enabled') === 'on',
+      threshold: String(form.get('threshold')),
+      severity: String(form.get('severity')),
+    };
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const updated = await api(`admin/financial-rules/${rule.id}`, update) as FinancialRuleView;
+      setFinancialRules(current => current.map(item => item.id === updated.id ? updated : item));
+      setMessage(`Rule ${updated.code.replaceAll('_', ' ')} saved. This affects reviews generated from now on; existing reviews remain unchanged.`);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to save the financial rule.'); }
+    finally { setBusy(false); }
+  }
   return <main className="dashboard"><section className={`${insightStyles.page} ${workspaceStyles.page}`}>
     <p className="eyebrow">FINANCIAL INTELLIGENCE · PRIVATE REVIEW</p><h1>Financial review</h1>
     <p className="muted">Reviews use transparent rules over summarized, validated records. This is informational, not personalized investment, tax, or legal advice.</p>
@@ -1741,6 +1834,22 @@ export function FinancialReview() {
       <button type="button" disabled={busy || !space} onClick={() => void generateReview('ON_DEMAND')}>Generate on-demand review</button>
       <button type="button" disabled={busy || !space} onClick={() => void generateReview('MONTHLY')}>Generate this month’s review</button>
     </div>
+    {canManageFinancialRules && <section className={insightStyles.panel}>
+      <h2>Admin-managed financial rules</h2>
+      <p className="muted">These global rules affect future reviews. Existing review snapshots are not recalculated. Rule definitions and supported metrics are fixed; admins can change thresholds, severity, and whether a rule is enabled.</p>
+      <div className={insightStyles.ruleList}>
+        {financialRules.map(rule => <form className={insightStyles.rule} key={`${rule.id}:${rule.updatedAt}`} onSubmit={event => void saveFinancialRule(event, rule)}>
+          <div><p className="eyebrow">{rule.market === '*' ? 'ALL MARKETS' : rule.market} · {rule.code.replaceAll('_', ' ')}</p><h3>{financialRuleMetricLabels[rule.metric]}</h3><p className="muted">Trigger when value is {rule.operator === 'LESS_THAN' ? 'below' : 'above'} {rule.threshold}.</p></div>
+          <div className={insightStyles.ruleControls}>
+            <label>Threshold<input name="threshold" type="number" min={rule.metric === 'savingsRatePercent' || rule.metric === 'emergencyFundMonths' ? '0' : undefined} max={rule.metric === 'savingsRatePercent' ? '100' : rule.metric === 'emergencyFundMonths' ? '1200' : undefined} step="0.0001" defaultValue={rule.threshold} required /></label>
+            <label>Severity<select name="severity" defaultValue={rule.severity}><option value="HIGH">High</option><option value="MEDIUM">Medium</option><option value="LOW">Low</option></select></label>
+            <label className={insightStyles.ruleEnabled}><input name="enabled" type="checkbox" defaultChecked={rule.enabled} /> Enabled</label>
+            <button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save rule'}</button>
+          </div>
+        </form>)}
+        {!financialRules.length && <p>No financial rules are configured.</p>}
+      </div>
+    </section>}
     {reviews.length > 0 && <label className={insightStyles.reviewSelector}>Past reviews
       <select value={selectedReview?.id ?? ''} onChange={event => setSelectedReviewId(event.target.value)}>
         {reviews.map(review => <option key={review.id} value={review.id}>{review.trigger === 'MONTHLY' ? `Monthly · ${review.monthlyPeriod}` : `On demand · ${new Date(review.createdAt).toLocaleDateString()}`}</option>)}
@@ -1807,5 +1916,482 @@ export function FinancialReview() {
         </div>}
       </section>
     </>}
+  </section></main>;
+}
+
+type HouseholdSpaceView = {
+  id: string;
+  name: string;
+  type: 'PERSONAL' | 'HOUSEHOLD';
+  baseCurrency: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER';
+};
+type HouseholdDetailsView = {
+  id: string;
+  name: string;
+  baseCurrency: string;
+  role: HouseholdSpaceView['role'];
+  members: Array<{ id: string; userId: string; name: string; email: string; role: HouseholdSpaceView['role'] }>;
+  dependants: Array<{ id: string; name: string; relationship: string; dateOfBirth: string | null }>;
+  invitations: Array<{ id: string; invitedEmail: string; role: HouseholdSpaceView['role']; expiresAt: string; createdAt: string }>;
+  canManage: boolean;
+};
+type HouseholdAssetType = 'SAVINGS_ACCOUNT' | 'INVESTMENT' | 'LIABILITY';
+type HouseholdAssetChoice = { id: string; entityType: HouseholdAssetType; name: string; currencyCode: string; value: string | null };
+type HouseholdOwnershipView = {
+  asOfDate: string;
+  allocations: Array<{
+    id: string;
+    entityType: HouseholdAssetType;
+    entityId: string;
+    name: string | null;
+    currencyCode: string | null;
+    value: string | null;
+    percentage: string;
+    ownedAmount: string | null;
+    owner: { id: string; name: string; email: string; isCurrentMember: boolean };
+  }>;
+  unallocated: Array<{
+    entityType: HouseholdAssetType;
+    entityId: string;
+    name: string;
+    currencyCode: string;
+    value: string | null;
+    reason: string;
+  }>;
+  memberShares: Array<{
+    owner: { id: string; name: string; email: string; isCurrentMember: boolean };
+    currencies: Array<{ currencyCode: string; assets: string; liabilities: string; netWorth: string }>;
+  }>;
+};
+type SharedPersonalItemView = {
+  id: string;
+  sharedBy: string;
+  permission: 'BALANCE_ONLY' | 'SUMMARY' | 'FULL_READ';
+  entityType: 'SAVINGS_ACCOUNT' | 'INVESTMENT' | 'LIABILITY' | 'GOAL';
+  currencyCode?: string;
+  balance?: string | null;
+  name?: string;
+  type?: string;
+  targetAmount?: string;
+  targetDate?: string | null;
+  maturityDate?: string | null;
+  unavailable?: boolean;
+};
+type PersonalShareView = {
+  id: string;
+  entityType: SharedPersonalItemView['entityType'];
+  entityId: string;
+  targetHouseholdSpaceId: string;
+  targetHouseholdName: string;
+  permission: SharedPersonalItemView['permission'];
+  revokedAt: string | null;
+};
+type PersonalItemChoice = { id: string; entityType: SharedPersonalItemView['entityType']; name: string };
+const shareEntityLabels: Record<SharedPersonalItemView['entityType'], string> = {
+  SAVINGS_ACCOUNT: 'Savings account',
+  INVESTMENT: 'Investment',
+  LIABILITY: 'Liability',
+  GOAL: 'Financial goal',
+};
+export function HouseholdManagement() {
+  const [personalSpace, setPersonalSpace] = useState<HouseholdSpaceView | null>(null);
+  const [households, setHouseholds] = useState<HouseholdSpaceView[]>([]);
+  const [selectedHouseholdId, setSelectedHouseholdId] = useState('');
+  const [details, setDetails] = useState<HouseholdDetailsView | null>(null);
+  const [sharedItems, setSharedItems] = useState<SharedPersonalItemView[]>([]);
+  const [householdAssets, setHouseholdAssets] = useState<HouseholdAssetChoice[]>([]);
+  const [ownership, setOwnership] = useState<HouseholdOwnershipView | null>(null);
+  const [selectedOwnershipAssetKey, setSelectedOwnershipAssetKey] = useState('');
+  const [ownershipDraft, setOwnershipDraft] = useState<Record<string, string>>({});
+  const [personalShares, setPersonalShares] = useState<PersonalShareView[]>([]);
+  const [personalItems, setPersonalItems] = useState<PersonalItemChoice[]>([]);
+  const [shareEntityType, setShareEntityType] = useState<SharedPersonalItemView['entityType']>('SAVINGS_ACCOUNT');
+  const [currentUserId, setCurrentUserId] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
+  const [newSpaceName, setNewSpaceName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  async function loadSpaces() {
+    const result = await api('spaces') as HouseholdSpaceView[];
+    setPersonalSpace(result.find(space => space.type === 'PERSONAL') ?? null);
+    const nextHouseholds = result.filter(space => space.type === 'HOUSEHOLD');
+    setHouseholds(nextHouseholds);
+    const preferredId = window.localStorage.getItem('pf_active_space_id');
+    const nextHousehold = nextHouseholds.find(space => space.id === preferredId) ?? nextHouseholds[0];
+    if (nextHousehold) setSelectedHouseholdId(current => nextHouseholds.some(space => space.id === current) ? current : nextHousehold.id);
+    return result;
+  }
+  async function loadPersonalItems(spaceId: string) {
+    const [savings, investments, liabilities, goals] = await Promise.all([
+      api(`spaces/${spaceId}/savings-accounts`) as Promise<{ accounts: Array<{ id: string; name: string }> }>,
+      api(`spaces/${spaceId}/investments`) as Promise<{ accounts: Array<{ investments: Array<{ id: string; name: string }> }> }>,
+      api(`spaces/${spaceId}/liabilities`) as Promise<{ liabilities: Array<{ id: string; name: string }> }>,
+      api(`spaces/${spaceId}/goals`) as Promise<{ goals: Array<{ id: string; name: string }> }>,
+    ]);
+    setPersonalItems([
+      ...savings.accounts.map(item => ({ id: item.id, name: item.name, entityType: 'SAVINGS_ACCOUNT' as const })),
+      ...investments.accounts.flatMap(account => account.investments.map(item => ({ id: item.id, name: item.name, entityType: 'INVESTMENT' as const }))),
+      ...liabilities.liabilities.map(item => ({ id: item.id, name: item.name, entityType: 'LIABILITY' as const })),
+      ...goals.goals.map(item => ({ id: item.id, name: item.name, entityType: 'GOAL' as const })),
+    ]);
+  }
+  async function loadHousehold(householdId: string) {
+    const [household, shared, savings, investments, liabilities, ownershipView] = await Promise.all([
+      api(`spaces/${householdId}/household`) as Promise<HouseholdDetailsView>,
+      api(`spaces/${householdId}/shared-personal-items`) as Promise<SharedPersonalItemView[]>,
+      api(`spaces/${householdId}/savings-accounts`) as Promise<{ accounts: Array<{ id: string; name: string; currencyCode: string; balance: string }> }>,
+      api(`spaces/${householdId}/investments`) as Promise<{ accounts: Array<{ investments: Array<{ id: string; name: string; currencyCode: string; currentValue: string | null }> }> }>,
+      api(`spaces/${householdId}/liabilities`) as Promise<{ liabilities: Array<{ id: string; name: string; currencyCode: string; outstandingBalance: string }> }>,
+      api(`spaces/${householdId}/ownership`) as Promise<HouseholdOwnershipView>,
+    ]);
+    setDetails(household);
+    setSharedItems(shared);
+    const assets: HouseholdAssetChoice[] = [
+      ...savings.accounts.map(item => ({ id: item.id, entityType: 'SAVINGS_ACCOUNT' as const, name: item.name, currencyCode: item.currencyCode, value: item.balance })),
+      ...investments.accounts.flatMap(account => account.investments.map(item => ({ id: item.id, entityType: 'INVESTMENT' as const, name: item.name, currencyCode: item.currencyCode, value: item.currentValue }))),
+      ...liabilities.liabilities.map(item => ({ id: item.id, entityType: 'LIABILITY' as const, name: item.name, currencyCode: item.currencyCode, value: item.outstandingBalance })),
+    ];
+    setHouseholdAssets(assets);
+    setOwnership(ownershipView);
+    setSelectedOwnershipAssetKey(current => assets.some(item => `${item.entityType}:${item.id}` === current) ? current : '');
+  }
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const token = new URLSearchParams(window.location.search).get('invite');
+        if (token) setInviteToken(token);
+        const [user, result] = await Promise.all([
+          api('auth/me') as Promise<{ id: string }>,
+          api('spaces') as Promise<HouseholdSpaceView[]>,
+        ]);
+        if (!active) return;
+        setCurrentUserId(user.id);
+        const personal = result.find(space => space.type === 'PERSONAL') ?? null;
+        setPersonalSpace(personal);
+        const householdSpaces = result.filter(space => space.type === 'HOUSEHOLD');
+        setHouseholds(householdSpaces);
+        const preferredId = window.localStorage.getItem('pf_active_space_id');
+        const selected = householdSpaces.find(space => space.id === preferredId) ?? householdSpaces[0];
+        if (selected) setSelectedHouseholdId(selected.id);
+        if (personal) {
+          const [shares] = await Promise.all([
+            api(`spaces/${personal.id}/shares`) as Promise<PersonalShareView[]>,
+            loadPersonalItems(personal.id),
+          ]);
+          if (active) setPersonalShares(shares);
+        }
+      } catch (e) { if (active) setError(e instanceof Error ? e.message : 'Unable to load household information.'); }
+    })();
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    if (selectedHouseholdId) void loadHousehold(selectedHouseholdId).catch(e => {
+      if (active) setError(e instanceof Error ? e.message : 'Unable to load this household.');
+    });
+    return () => { active = false; };
+  }, [selectedHouseholdId]);
+
+  async function createHousehold(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const created = await api('spaces', { name: String(form.get('name')), baseCurrency: String(form.get('baseCurrency')) }) as HouseholdSpaceView;
+      window.localStorage.setItem('pf_active_space_id', created.id);
+      await loadSpaces();
+      setSelectedHouseholdId(created.id);
+      setMessage('Household Space created. Its records are separate from your Personal Space.');
+      formElement.reset();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to create the Household Space.'); }
+    finally { setBusy(false); }
+  }
+  async function acceptInvitation() {
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const accepted = await api('household-invitations/accept', { token: inviteToken }) as { spaceId: string; name: string };
+      window.history.replaceState({}, '', '/household');
+      setInviteToken('');
+      window.localStorage.setItem('pf_active_space_id', accepted.spaceId);
+      await loadSpaces();
+      setSelectedHouseholdId(accepted.spaceId);
+      setMessage(`You joined ${accepted.name}. Personal records remain private unless you explicitly share them.`);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to accept this invitation. Sign in with the invited email and try again.'); }
+    finally { setBusy(false); }
+  }
+  async function createInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedHouseholdId) return;
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${selectedHouseholdId}/household-invitations`, { email: String(form.get('email')), role: String(form.get('role')) });
+      formElement.reset();
+      await loadHousehold(selectedHouseholdId);
+      setMessage('Invitation sent. It expires after seven days and only the invited email address can accept it.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to send the household invitation.'); }
+    finally { setBusy(false); }
+  }
+  async function updateMemberRole(event: FormEvent<HTMLFormElement>, memberId: string) {
+    event.preventDefault();
+    if (!selectedHouseholdId) return;
+    const role = String(new FormData(event.currentTarget).get('role'));
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${selectedHouseholdId}/household-members/${memberId}/role`, { role });
+      await loadHousehold(selectedHouseholdId);
+      setMessage('Household role updated.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to update the household role.'); }
+    finally { setBusy(false); }
+  }
+  async function removeMember(memberId: string, self = false) {
+    if (!selectedHouseholdId || !window.confirm(self ? 'Leave this Household Space?' : 'Remove this member from the Household Space?')) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${selectedHouseholdId}/household-members/${memberId}/remove`, {});
+      if (self) {
+        window.localStorage.removeItem('pf_active_space_id');
+        await loadSpaces();
+        setSelectedHouseholdId('');
+        setDetails(null);
+      } else await loadHousehold(selectedHouseholdId);
+      setMessage(self ? 'You left the Household Space.' : 'Member removed from the Household Space.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to remove this household member.'); }
+    finally { setBusy(false); }
+  }
+  async function revokeInvitation(invitationId: string) {
+    if (!selectedHouseholdId) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${selectedHouseholdId}/household-invitations/${invitationId}/revoke`, {});
+      await loadHousehold(selectedHouseholdId);
+      setMessage('Invitation revoked.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to revoke this invitation.'); }
+    finally { setBusy(false); }
+  }
+  async function createDependant(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedHouseholdId) return;
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const dateOfBirth = String(form.get('dateOfBirth') ?? '');
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${selectedHouseholdId}/dependants`, {
+        name: String(form.get('name')),
+        relationship: String(form.get('relationship')),
+        ...(dateOfBirth ? { dateOfBirth } : {}),
+      });
+      formElement.reset();
+      await loadHousehold(selectedHouseholdId);
+      setMessage('Dependant added to this Household Space.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to add this dependant.'); }
+    finally { setBusy(false); }
+  }
+  async function removeDependant(dependantId: string) {
+    if (!selectedHouseholdId) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${selectedHouseholdId}/dependants/${dependantId}/remove`, {});
+      await loadHousehold(selectedHouseholdId);
+      setMessage('Dependant removed.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to remove this dependant.'); }
+    finally { setBusy(false); }
+  }
+  async function sharePersonalItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!personalSpace || !selectedHouseholdId) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${personalSpace.id}/shares`, {
+        targetHouseholdSpaceId: selectedHouseholdId,
+        entityType: String(form.get('entityType')),
+        entityId: String(form.get('entityId')),
+        permission: String(form.get('permission')),
+      });
+      const shares = await api(`spaces/${personalSpace.id}/shares`) as PersonalShareView[];
+      setPersonalShares(shares);
+      await loadHousehold(selectedHouseholdId);
+      setMessage('Personal record shared with this household. You can revoke access at any time.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to share this Personal record.'); }
+    finally { setBusy(false); }
+  }
+  async function revokeShare(shareId: string) {
+    if (!personalSpace) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await api(`spaces/${personalSpace.id}/shares/${shareId}/revoke`, {});
+      setPersonalShares(await api(`spaces/${personalSpace.id}/shares`) as PersonalShareView[]);
+      if (selectedHouseholdId) await loadHousehold(selectedHouseholdId);
+      setMessage('Personal sharing revoked. The record remains in your Personal Space.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to revoke personal sharing.'); }
+    finally { setBusy(false); }
+  }
+  function selectOwnershipAsset(key: string) {
+    setSelectedOwnershipAssetKey(key);
+    const [entityType, entityId] = key.split(':') as [HouseholdAssetType, string];
+    const existing = ownership?.allocations.filter(item => item.entityType === entityType && item.entityId === entityId) ?? [];
+    const draft = Object.fromEntries(existing.map(item => [item.owner.id, item.percentage]));
+    if (!existing.length && currentUserId) draft[currentUserId] = '100';
+    setOwnershipDraft(draft);
+  }
+  async function saveOwnership(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedHouseholdId || !selectedOwnershipAssetKey) return;
+    const [entityType, entityId] = selectedOwnershipAssetKey.split(':') as [HouseholdAssetType, string];
+    const allocations = Object.entries(ownershipDraft)
+      .filter(([, percentage]) => percentage.trim() !== '' && Number(percentage) > 0)
+      .map(([ownerUserId, percentage]) => ({ ownerUserId, percentage }));
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const updated = await api(`spaces/${selectedHouseholdId}/ownership`, { entityType, entityId, allocations }) as HouseholdOwnershipView;
+      setOwnership(updated);
+      setMessage('Ownership shares saved. Shares must total exactly 100%; a departed owner’s share remains recorded.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to save household ownership.'); }
+    finally { setBusy(false); }
+  }
+  function money(amount: string | null | undefined, currency = details?.baseCurrency ?? 'GHS') {
+    if (amount === null || amount === undefined) return 'Not valued';
+    const number = Number(amount);
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(number); }
+    catch { return `${currency} ${number.toFixed(2)}`; }
+  }
+  const selectedHousehold = households.find(space => space.id === selectedHouseholdId);
+  const availableItems = personalItems.filter(item => item.entityType === shareEntityType);
+  const currentMember = details?.members.find(member => member.userId === currentUserId);
+  const selectedOwnershipAsset = householdAssets.find(item => `${item.entityType}:${item.id}` === selectedOwnershipAssetKey);
+  const historicalOwners = ownership?.allocations
+    .filter(item => `${item.entityType}:${item.entityId}` === selectedOwnershipAssetKey && !item.owner.isCurrentMember)
+    .map(item => item.owner) ?? [];
+
+  return <main className="dashboard"><section className={`${householdStyles.page} ${workspaceStyles.page}`}>
+    <p className="eyebrow">HOUSEHOLD FINANCE · SHARED SPACE</p><h1>Household</h1>
+    <p className="muted">Coordinate household finances in a separate shared space. Personal records stay private unless you explicitly share an item, and shared access is read-only and revocable.</p>
+    {error && <p className="error" role="alert">{error}</p>}
+    {message && <p className="notice" role="status">{message}</p>}
+    {inviteToken && <section className={householdStyles.panel}><h2>Household invitation</h2><p>Accept with the verified account that received this invitation. If you are not signed in, sign in with the invited email and reopen the invitation link.</p><div className={householdStyles.actions}><Link href="/">Sign in</Link><button type="button" disabled={busy} onClick={() => void acceptInvitation()}>{busy ? 'Working…' : 'Accept invitation'}</button></div></section>}
+    {households.length > 0 && <label className={householdStyles.selector}>Household Space
+      <select value={selectedHouseholdId} onChange={event => {
+        const id = event.currentTarget.value;
+        setSelectedHouseholdId(id);
+        window.localStorage.setItem('pf_active_space_id', id);
+      }}>{households.map(space => <option key={space.id} value={space.id}>{space.name} · {space.baseCurrency}</option>)}</select>
+    </label>}
+    {!households.length && <section className={householdStyles.panel}><h2>Start a shared space</h2><p>Create a Household Space below. It starts empty; no Personal financial records are copied into it.</p></section>}
+    {selectedHousehold && details && <>
+      <section className={householdStyles.panel}>
+        <div className={householdStyles.heading}><div><p className="eyebrow">{details.baseCurrency} · YOUR ROLE: {details.role}</p><h2>{details.name}</h2></div><span className="tag">HOUSEHOLD SPACE</span></div>
+        <p className="muted">Choose this Household Space in the sidebar’s Financial Space selector to record household income, expenses, savings, goals, budgets, investments, and liabilities. Each space’s records remain separate.</p>
+        <nav className={householdStyles.quickLinks} aria-label="Household finance sections">
+          <Link href="/dashboard">Overview</Link><Link href="/income">Income</Link><Link href="/expenses">Expenses</Link><Link href="/budgets">Budgets</Link><Link href="/savings">Savings</Link><Link href="/investments">Investments</Link><Link href="/goals">Goals</Link><Link href="/liabilities">Liabilities</Link><Link href="/net-worth">Net worth</Link>
+        </nav>
+      </section>
+      <section className={householdStyles.panel}>
+        <h2>Household ownership and net worth</h2>
+        <p className="muted">Household assets and liabilities count once in total Household net worth. Ownership shares show each member’s proportional amount by currency; no Personal records are included. Shares for a member who leaves remain attributed to that former member.</p>
+        {!ownership?.memberShares.length ? <p className="muted">No ownership shares are recorded yet. New Household savings, investments, and liabilities start assigned 100% to the member who records them.</p> : <div className={householdStyles.sharedGrid}>{ownership.memberShares.map(member => <article className={householdStyles.sharedItem} key={member.owner.id}>
+          <p className="eyebrow">{member.owner.isCurrentMember ? 'CURRENT MEMBER' : 'FORMER MEMBER'}</p>
+          <h3>{member.owner.name}</h3>
+          {member.currencies.map(currency => <p key={currency.currencyCode}><strong>{currency.currencyCode}</strong> · Assets {money(currency.assets, currency.currencyCode)} · Liabilities {money(currency.liabilities, currency.currencyCode)} · Net share {money(currency.netWorth, currency.currencyCode)}</p>)}
+        </article>)}</div>}
+        {!!ownership?.unallocated.length && <div className={householdStyles.subsection}>
+          <h3>Assets and liabilities needing ownership shares</h3>
+          <ul className={householdStyles.list}>{ownership.unallocated.map(item => <li key={`${item.entityType}:${item.entityId}`}>
+            <div><strong>{item.name}</strong><span>{shareEntityLabels[item.entityType]} · {item.reason.replaceAll('_', ' ')} · {item.value === null ? 'Not valued' : money(item.value, item.currencyCode)}</span></div>
+          </li>)}</ul>
+        </div>}
+        {details.role !== 'VIEWER' && <form className={householdStyles.form} onSubmit={event => void saveOwnership(event)}>
+          <h3>Set ownership percentages</h3>
+          <p className="muted">Choose a Household-owned item and assign shares totaling exactly 100%. Historical shares belonging to departed members are retained and cannot be changed here.</p>
+          <label>Household asset or liability<select value={selectedOwnershipAssetKey} onChange={event => selectOwnershipAsset(event.currentTarget.value)}>
+            <option value="">Select a record</option>
+            {householdAssets.map(item => <option key={`${item.entityType}:${item.id}`} value={`${item.entityType}:${item.id}`}>{item.name} · {shareEntityLabels[item.entityType]} · {item.currencyCode}</option>)}
+          </select></label>
+          {selectedOwnershipAsset && <>
+            <p className="muted">{selectedOwnershipAsset.name} · {selectedOwnershipAsset.value === null ? 'Not valued' : money(selectedOwnershipAsset.value, selectedOwnershipAsset.currencyCode)}</p>
+            {details.members.map(member => <label key={member.userId}>{member.name} ({member.role}) ownership %
+              <input type="number" min="0" max="100" step="0.0001" value={ownershipDraft[member.userId] ?? ''} onChange={event => setOwnershipDraft(current => ({ ...current, [member.userId]: event.currentTarget.value }))} />
+            </label>)}
+            {historicalOwners.map(owner => <label key={owner.id}>{owner.name} (former member; historical share) %
+              <input type="number" value={ownershipDraft[owner.id] ?? ''} readOnly />
+            </label>)}
+            <button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save ownership shares'}</button>
+          </>}
+        </form>}
+      </section>
+      <section className={householdStyles.panel}>
+        <h2>Household members</h2>
+        <ul className={householdStyles.list}>{details.members.map(member => <li key={member.id}>
+          <div><strong>{member.name}{member.userId === currentUserId ? ' (you)' : ''}</strong><span>{member.email} · {member.role}</span></div>
+          {details.canManage && member.role !== 'OWNER' && member.userId !== currentUserId && <div className={householdStyles.memberActions}>
+            <form onSubmit={event => void updateMemberRole(event, member.id)}><select name="role" defaultValue={member.role} aria-label={`Role for ${member.name}`}>
+              {details.role === 'OWNER' && <option value="ADMIN">Admin</option>}
+              <option value="MEMBER">Member</option><option value="VIEWER">Viewer</option>
+            </select><button type="submit" disabled={busy}>Update role</button></form>
+            <button type="button" className={householdStyles.secondary} disabled={busy} onClick={() => void removeMember(member.id)}>Remove</button>
+          </div>}
+        </li>)}</ul>
+        {currentMember && currentMember.role !== 'OWNER' && <button type="button" className={householdStyles.secondary} disabled={busy} onClick={() => void removeMember(currentMember.id, true)}>Leave this household</button>}
+        {details.canManage && <form className={householdStyles.form} onSubmit={event => void createInvitation(event)}>
+          <h3>Invite a member</h3>
+          <label>Email address<input name="email" type="email" required maxLength={254} /></label>
+          <label>Role<select name="role" defaultValue="MEMBER"><option value="MEMBER">Member</option><option value="VIEWER">Viewer</option>{details.role === 'OWNER' && <option value="ADMIN">Admin</option>}</select></label>
+          <button type="submit" disabled={busy}>{busy ? 'Sending…' : 'Send invitation'}</button>
+        </form>}
+        {details.canManage && details.invitations.length > 0 && <div className={householdStyles.subsection}><h3>Pending invitations</h3><ul className={householdStyles.list}>{details.invitations.map(invitation => <li key={invitation.id}><div><strong>{invitation.invitedEmail}</strong><span>{invitation.role} · expires {new Date(invitation.expiresAt).toLocaleDateString()}</span></div><button type="button" className={householdStyles.secondary} disabled={busy} onClick={() => void revokeInvitation(invitation.id)}>Revoke</button></li>)}</ul></div>}
+      </section>
+      {details.canManage && <section className={householdStyles.panel}>
+        <h2>Dependants</h2><p className="muted">Dependants are household profile information, not user accounts or financial records.</p>
+        {details.dependants.length > 0 && <ul className={householdStyles.list}>{details.dependants.map(dependant => <li key={dependant.id}><div><strong>{dependant.name}</strong><span>{dependant.relationship}{dependant.dateOfBirth ? ` · Born ${dependant.dateOfBirth}` : ''}</span></div><button type="button" className={householdStyles.secondary} disabled={busy} onClick={() => void removeDependant(dependant.id)}>Remove</button></li>)}</ul>}
+        <form className={householdStyles.form} onSubmit={event => void createDependant(event)}>
+          <label>Name<input name="name" required maxLength={100} /></label>
+          <label>Relationship<input name="relationship" required maxLength={60} placeholder="e.g. Child" /></label>
+          <label>Date of birth (optional)<input name="dateOfBirth" type="date" max={new Date().toISOString().slice(0, 10)} /></label>
+          <button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Add dependant'}</button>
+        </form>
+      </section>}
+      <section className={householdStyles.panel}>
+        <h2>Personal information shared with this household</h2>
+        <p className="muted">These items were explicitly shared by their owners. BALANCE_ONLY reveals only the current amount; SUMMARY adds identifying details; FULL_READ also includes recorded history. All shared access is read-only and can be revoked by the owner.</p>
+        {!sharedItems.length ? <p>No Personal records have been shared with this household.</p> : <div className={householdStyles.sharedGrid}>{sharedItems.map(item => <article className={householdStyles.sharedItem} key={item.id}>
+          <p className="eyebrow">{shareEntityLabels[item.entityType]} · {item.permission.replaceAll('_', ' ')}</p>
+          <h3>{item.name ?? 'Shared balance'}</h3>
+          <p>{item.unavailable ? 'The owner’s record is no longer available.' : money(item.balance, item.currencyCode)}</p>
+          {item.targetAmount && <p className="muted">Goal target: {money(item.targetAmount, item.currencyCode)}{item.targetDate ? ` · Target date ${item.targetDate}` : ''}</p>}
+          {item.maturityDate && <p className="muted">Maturity date: {item.maturityDate}</p>}
+          <small>Shared by {item.sharedBy}</small>
+        </article>)}</div>}
+      </section>
+      {personalSpace && <section className={householdStyles.panel}>
+        <h2>Share one of your Personal records</h2><p className="muted">Sharing does not transfer ownership or allow household members to edit the original. You can change the permission or revoke access here.</p>
+        <form className={householdStyles.form} onSubmit={event => void sharePersonalItem(event)}>
+          <label>Record type<select name="entityType" value={shareEntityType} onChange={event => setShareEntityType(event.currentTarget.value as SharedPersonalItemView['entityType'])}>{Object.entries(shareEntityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Personal record<select name="entityId" required key={shareEntityType} defaultValue="">
+            <option value="" disabled>Select a record</option>
+            {availableItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select></label>
+          <label>Permission<select name="permission" defaultValue="BALANCE_ONLY"><option value="BALANCE_ONLY">Balance only</option><option value="SUMMARY">Summary</option><option value="FULL_READ">Full read-only history</option></select></label>
+          <button type="submit" disabled={busy || !selectedHouseholdId || !personalItems.length}>{busy ? 'Saving…' : 'Share with this household'}</button>
+        </form>
+        <div className={householdStyles.subsection}><h3>Your shared records</h3>
+          {!personalShares.filter(share => share.targetHouseholdSpaceId === selectedHouseholdId).length ? <p>No records shared by you with this household.</p> : <ul className={householdStyles.list}>{personalShares.filter(share => share.targetHouseholdSpaceId === selectedHouseholdId).map(share => <li key={share.id}><div><strong>{shareEntityLabels[share.entityType]}</strong><span>{share.targetHouseholdName} · {share.permission.replaceAll('_', ' ')}{share.revokedAt ? ' · Revoked' : ''}</span></div>{!share.revokedAt && <button type="button" className={householdStyles.secondary} disabled={busy} onClick={() => void revokeShare(share.id)}>Revoke access</button>}</li>)}</ul>}
+        </div>
+      </section>}
+    </>}
+    <section className={householdStyles.panel}>
+      <h2>Create another Household Space</h2>
+      <form className={householdStyles.form} onSubmit={event => void createHousehold(event)}>
+        <label>Household name<input name="name" required maxLength={100} placeholder="e.g. Family home" /></label>
+        <label>Base currency<input name="baseCurrency" defaultValue="GHS" required maxLength={3} pattern="[A-Za-z]{3}" /></label>
+        <button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create Household Space'}</button>
+      </form>
+    </section>
   </section></main>;
 }

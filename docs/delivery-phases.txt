@@ -65,7 +65,7 @@ A user can model alternatives and convert a chosen scenario into a trackable pla
 Phase 7 — Rule-Based Financial Insights
 Implement:
 •	profile snapshots;
-•	financial rules;
+•	admin-managed, configurable financial rules;
 •	deterministic strategy generation from validated facts;
 •	multiple strategies;
 •	feedback;
@@ -73,7 +73,7 @@ Implement:
 •	on-demand insights;
 •	strategy-to-plan conversion.
 Acceptance:
-Every insight is traceable to validated facts and explicit rules, and cannot alter authoritative financial calculations or records. A selected or modified strategy can become a goal-linked plan only after the user supplies its projection assumptions; conversion is private to the Financial Space and cannot be repeated.
+Every insight is traceable to validated facts and explicit rules, and cannot alter authoritative financial calculations or records. Only explicitly allowlisted platform administrators can change supported rule settings. A selected or modified strategy can become a goal-linked plan only after the user supplies its projection assumptions; conversion is private to the Financial Space and cannot be repeated.
 Phase 8 — Household Finance
 Implement:
 •	Household Spaces;
@@ -88,6 +88,7 @@ Implement:
 •	household net worth.
 Acceptance:
 Joining a household exposes no Personal financial information without explicit sharing.
+Household net worth counts shared-space assets and liabilities once, separately from Personal data. Ownership allocations for supported Household assets and liabilities total 100%; member-level shares remain attributed to former members if they leave.
 Phase 9 — Engagement
 Implement:
 •	achievements;

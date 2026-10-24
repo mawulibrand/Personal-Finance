@@ -241,6 +241,66 @@
   width: fit-content;
 }
 
+.ruleList {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 1fr);
+  gap: 18px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid #e2e7df;
+  border-radius: 9px;
+  background: #fbfcf9;
+}
+
+.rule .eyebrow {
+  margin: 0 0 6px;
+}
+
+.rule h3 {
+  margin: 0;
+}
+
+.ruleControls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: end;
+}
+
+.ruleControls label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.ruleControls input:not([type='checkbox']),
+.ruleControls select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #c9d1c9;
+  border-radius: 7px;
+  background: #fff;
+  color: #18332b;
+}
+
+.ruleControls .ruleEnabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ruleControls button {
+  width: fit-content;
+  justify-self: end;
+}
+
 @media (max-width: 760px) {
   .page {
     padding-top: 32px !important;
@@ -260,6 +320,14 @@
 
   .conversionFields {
     grid-template-columns: 1fr;
+  }
+
+  .rule {
+    grid-template-columns: 1fr;
+  }
+
+  .ruleControls button {
+    width: 100%;
   }
 
   .conversionForm button {

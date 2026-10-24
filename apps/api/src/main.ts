@@ -30,10 +30,54 @@ const db = createDatabase(required('DATABASE_URL'));
 const email = z.string().trim().toLowerCase().email().max(254);
 const password = z.string().min(12).max(128);
 const amount = z.string().regex(/^(?:0|[1-9]\d{0,14})(?:\.\d{1,4})?$/).refine(value => Number(value) > 0, 'Amount must be greater than zero.');
+const financialRuleAdminEmails = new Set((process.env.FINANCIAL_RULE_ADMIN_EMAILS ?? '')
+  .split(',')
+  .map(value => value.trim().toLowerCase())
+  .filter(Boolean));
+const isFinancialRuleAdmin = (user: { email: string }) => financialRuleAdminEmails.has(user.email.toLowerCase());
+const householdSpaceInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  baseCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).default('GHS'),
+}).strict();
+const householdInvitationInput = z.object({
+  email,
+  role: z.enum(['ADMIN', 'MEMBER', 'VIEWER']),
+}).strict();
+const householdInvitationTokenInput = z.object({ token: z.string().min(40).max(100) }).strict();
+const householdMemberRoleInput = z.object({ role: z.enum(['ADMIN', 'MEMBER', 'VIEWER']) }).strict();
+const sharedFinancialItemInput = z.object({
+  targetHouseholdSpaceId: z.string().uuid(),
+  entityType: z.enum(['SAVINGS_ACCOUNT', 'INVESTMENT', 'LIABILITY', 'GOAL']),
+  entityId: z.string().uuid(),
+  permission: z.enum(['BALANCE_ONLY', 'SUMMARY', 'FULL_READ']),
+}).strict();
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }, 'Enter a valid date.');
+const dependantInput = z.object({
+  name: z.string().trim().min(1).max(100),
+  relationship: z.string().trim().min(1).max(60),
+  dateOfBirth: dateOnly.optional(),
+}).strict();
+const householdOwnershipInput = z.object({
+  entityType: z.enum(['SAVINGS_ACCOUNT', 'INVESTMENT', 'LIABILITY']),
+  entityId: z.string().uuid(),
+  allocations: z.array(z.object({
+    ownerUserId: z.string().uuid(),
+    percentage: z.string().regex(/^(?:0|[1-9]\d{0,2})(?:\.\d{1,4})?$/)
+      .refine(value => new Prisma.Decimal(value).greaterThan(0) && new Prisma.Decimal(value).lessThanOrEqualTo(100)),
+  }).strict()).min(1).max(100),
+}).strict().superRefine((input, context) => {
+  const owners = input.allocations.map(allocation => allocation.ownerUserId);
+  if (new Set(owners).size !== owners.length) {
+    context.addIssue({ code: 'custom', path: ['allocations'], message: 'Each owner can only be listed once.' });
+  }
+  const total = input.allocations.reduce((sum, allocation) => sum.plus(allocation.percentage), new Prisma.Decimal(0));
+  if (!total.equals(100)) {
+    context.addIssue({ code: 'custom', path: ['allocations'], message: 'Ownership percentages must total exactly 100%.' });
+  }
+});
 const incomeSourceInput = z.object({
   name: z.string().trim().min(1).max(100),
   type: z.enum(['SALARY', 'SELF_EMPLOYMENT', 'BUSINESS', 'INVESTMENT', 'GIFT', 'OTHER']),
@@ -127,6 +171,15 @@ const strategyResponseInput = z.object({
 }).strict().superRefine((input, context) => {
   if (!input.decision && !input.feedback) context.addIssue({ code: 'custom', message: 'Choose a decision or provide feedback.' });
   if (input.decision === 'MODIFIED' && !input.userNote) context.addIssue({ code: 'custom', path: ['userNote'], message: 'Describe your modified strategy.' });
+});
+const financialRuleThreshold = z.string().regex(/^-?(?:0|[1-9]\d{0,14})(?:\.\d{1,4})?$/);
+const financialRuleUpdateInput = z.object({
+  enabled: z.boolean(),
+  threshold: financialRuleThreshold,
+  severity: z.enum(['HIGH', 'MEDIUM', 'LOW']),
+}).strict().superRefine((input, context) => {
+  const threshold = Number(input.threshold);
+  if (!Number.isFinite(threshold)) context.addIssue({ code: 'custom', path: ['threshold'], message: 'Enter a valid threshold.' });
 });
 const scenarioRate = z.string().regex(/^-?(?:0|[1-9]\d{0,2})(?:\.\d{1,4})?$/);
 const scenarioInput = z.object({
@@ -256,7 +309,12 @@ function validate<T>(schema: z.ZodType<T>, input: unknown): T {
   if (!result.success) throw new BadRequestException('Please check the supplied fields.');
   return result.data;
 }
-const safeUser = (u: { id: string; name: string; email: string }) => ({ id: u.id, name: u.name, email: u.email });
+const safeUser = (u: { id: string; name: string; email: string }) => ({
+  id: u.id,
+  name: u.name,
+  email: u.email,
+  canManageFinancialRules: isFinancialRuleAdmin(u),
+});
 const toDateOnly = (date: Date) => date.toISOString().slice(0, 10);
 type InvestmentWithHistory = Prisma.InvestmentGetPayload<{ include: { transactions: true; valuations: true } }>;
 function investmentValueAt(investment: InvestmentWithHistory, asOfDate: Date) {
@@ -595,16 +653,509 @@ class Api {
     return { message: 'Password changed. Please sign in again.' };
   }
   @Get('auth/me') async me(@Req() req: Request) { return safeUser(await this.identity.user(req)); }
+  @Get('admin/financial-rules') async financialRules(@Req() req: Request) {
+    const user = await this.identity.user(req);
+    if (!isFinancialRuleAdmin(user)) throw new ForbiddenException('You do not have permission to manage financial review rules.');
+    const rules = await db.financialRule.findMany({ orderBy: [{ market: 'asc' }, { code: 'asc' }] });
+    return rules.map(rule => ({
+      id: rule.id,
+      code: rule.code,
+      market: rule.market,
+      metric: rule.metric,
+      operator: rule.operator,
+      threshold: rule.threshold.toString(),
+      severity: rule.severity,
+      enabled: rule.enabled,
+      updatedAt: rule.updatedAt.toISOString(),
+    }));
+  }
+  @Post('admin/financial-rules/:ruleId') async updateFinancialRule(
+    @Req() req: Request,
+    @Param('ruleId') ruleId: string,
+    @Body() body: unknown,
+  ) {
+    const user = await this.identity.user(req);
+    if (!isFinancialRuleAdmin(user)) throw new ForbiddenException('You do not have permission to manage financial review rules.');
+    const input = validate(financialRuleUpdateInput, body);
+    const validRuleId = validate(z.string().uuid(), ruleId);
+    const rule = await db.financialRule.findUnique({ where: { id: validRuleId } });
+    if (!rule) throw new NotFoundException();
+    const threshold = Number(input.threshold);
+    if ((rule.metric === 'savingsRatePercent' && (threshold < 0 || threshold > 100))
+      || (rule.metric === 'emergencyFundMonths' && (threshold < 0 || threshold > 1200))) {
+      throw new BadRequestException('Threshold is outside the supported range for this metric.');
+    }
+    const updated = await db.$transaction(async tx => {
+      const result = await tx.financialRule.update({
+        where: { id: rule.id },
+        data: { enabled: input.enabled, threshold: input.threshold, severity: input.severity },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, action: 'FINANCIAL_RULE_UPDATED' } });
+      return result;
+    });
+    return {
+      id: updated.id,
+      code: updated.code,
+      market: updated.market,
+      metric: updated.metric,
+      operator: updated.operator,
+      threshold: updated.threshold.toString(),
+      severity: updated.severity,
+      enabled: updated.enabled,
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+  }
   @Get('spaces') async spaces(@Req() req: Request) {
     const user = await this.identity.user(req);
     const memberships = await db.membership.findMany({ where: { userId: user.id }, include: { space: true } });
     return memberships.filter(m => m.space.type !== 'PERSONAL' || mayAccessPersonalSpace(user.id, m.space.personalOwnerId)).map(m => ({ ...m.space, role: m.role }));
   }
+  @Post('spaces') async createHouseholdSpace(@Req() req: Request, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const input = validate(householdSpaceInput, body);
+    const space = await db.$transaction(async tx => {
+      const created = await tx.financialSpace.create({
+        data: {
+          name: input.name,
+          baseCurrency: input.baseCurrency,
+          type: 'HOUSEHOLD',
+          memberships: { create: { userId: user.id, role: 'OWNER' } },
+        },
+      });
+      await tx.category.createMany({
+        data: DEFAULT_CATEGORIES.map(category => ({
+          ...category,
+          normalizedName: normalizeCategoryName(category.name),
+          spaceId: created.id,
+          isSystem: true,
+        })),
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: created.id, action: 'HOUSEHOLD_SPACE_CREATED' } });
+      return created;
+    });
+    return { ...space, baseCurrency: space.baseCurrency.trim(), role: 'OWNER' };
+  }
+  @Get('spaces/:id/household') async householdDetails(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    const [household, members, dependants] = await Promise.all([
+      db.financialSpace.findUniqueOrThrow({ where: { id: membership.spaceId } }),
+      db.membership.findMany({
+        where: { spaceId: membership.spaceId },
+        include: { user: { select: { id: true, name: true, email: true } } },
+        orderBy: { userId: 'asc' },
+      }),
+      db.dependant.findMany({
+        where: { spaceId: membership.spaceId },
+        orderBy: [{ name: 'asc' }, { createdAt: 'asc' }],
+      }),
+    ]);
+    const canManage = membership.role === 'OWNER' || membership.role === 'ADMIN';
+    const invitations = canManage ? await db.householdInvitation.findMany({
+      where: { spaceId: membership.spaceId, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, invitedEmail: true, role: true, expiresAt: true, createdAt: true },
+    }) : [];
+    return {
+      id: household.id,
+      name: household.name,
+      baseCurrency: household.baseCurrency.trim(),
+      role: membership.role,
+      members: members.map(item => ({
+        id: item.id,
+        userId: item.user.id,
+        name: item.user.name,
+        email: item.user.email,
+        role: item.role,
+      })),
+      dependants: dependants.map(item => ({
+        id: item.id,
+        name: item.name,
+        relationship: item.relationship,
+        dateOfBirth: item.dateOfBirth ? toDateOnly(item.dateOfBirth) : null,
+      })),
+      invitations,
+      canManage,
+    };
+  }
+  @Post('spaces/:id/household-invitations') async inviteHouseholdMember(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    if (membership.role !== 'OWNER' && membership.role !== 'ADMIN') {
+      throw new ForbiddenException('Only household owners and admins can invite members.');
+    }
+    const input = validate(householdInvitationInput, body);
+    if (input.role === 'ADMIN' && membership.role !== 'OWNER') {
+      throw new ForbiddenException('Only the household owner can invite an admin.');
+    }
+    const existingUser = await db.user.findUnique({ where: { email: input.email }, select: { id: true } });
+    if (existingUser && await db.membership.findUnique({ where: { userId_spaceId: { userId: existingUser.id, spaceId: membership.spaceId } } })) {
+      throw new ConflictException('This person is already a member of the household.');
+    }
+    const token = newToken();
+    const expiresAt = new Date(Date.now() + 7 * 86400000);
+    try {
+      const invitation = await db.$transaction(async tx => {
+        const created = await tx.householdInvitation.create({
+          data: {
+            spaceId: membership.spaceId,
+            invitedEmail: input.email,
+            role: input.role,
+            tokenHash: hashToken(token),
+            expiresAt,
+            invitedBy: user.id,
+          },
+        });
+        await tx.emailOutbox.create({
+          data: {
+            recipient: input.email,
+            subject: `Invitation to join ${membership.space.name}`,
+            body: `You have been invited to join ${membership.space.name} as a ${input.role.toLowerCase()}. Sign in or create an account with this email address, then accept the invitation here: ${origin}/household?invite=${token}. This invitation expires in seven days.`,
+          },
+        });
+        await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'HOUSEHOLD_INVITATION_CREATED' } });
+        return created;
+      });
+      return { id: invitation.id, invitedEmail: invitation.invitedEmail, role: invitation.role, expiresAt: invitation.expiresAt.toISOString() };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('There is already an active invitation for this email address.');
+      }
+      throw error;
+    }
+  }
+  @Post('household-invitations/accept') async acceptHouseholdInvitation(@Req() req: Request, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const { token } = validate(householdInvitationTokenInput, body);
+    const tokenHash = hashToken(token);
+    return db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "HouseholdInvitation" WHERE "tokenHash" = ${tokenHash} FOR UPDATE`;
+      const invitation = await tx.householdInvitation.findUnique({
+        where: { tokenHash },
+        include: { space: true },
+      });
+      if (!invitation || invitation.acceptedAt || invitation.revokedAt || invitation.expiresAt <= new Date()) {
+        throw new NotFoundException('This household invitation is invalid, expired, or already used.');
+      }
+      if (user.email.toLowerCase() !== invitation.invitedEmail) {
+        throw new ForbiddenException('Sign in with the email address that received this invitation.');
+      }
+      if (await tx.membership.findUnique({ where: { userId_spaceId: { userId: user.id, spaceId: invitation.spaceId } } })) {
+        throw new ConflictException('You are already a member of this household.');
+      }
+      await tx.membership.create({ data: { userId: user.id, spaceId: invitation.spaceId, role: invitation.role } });
+      await tx.householdInvitation.update({ where: { id: invitation.id }, data: { acceptedAt: new Date() } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: invitation.spaceId, action: 'HOUSEHOLD_INVITATION_ACCEPTED' } });
+      return { spaceId: invitation.spaceId, name: invitation.space.name, role: invitation.role };
+    });
+  }
+  @Post('spaces/:id/household-invitations/:invitationId/revoke') async revokeHouseholdInvitation(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('invitationId') invitationId: string,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    if (membership.role !== 'OWNER' && membership.role !== 'ADMIN') throw new ForbiddenException();
+    const validInvitationId = validate(z.string().uuid(), invitationId);
+    const invitation = await db.householdInvitation.findFirst({ where: { id: validInvitationId, spaceId: membership.spaceId } });
+    if (!invitation) throw new NotFoundException();
+    await db.$transaction(async tx => {
+      await tx.householdInvitation.updateMany({
+        where: { id: invitation.id, acceptedAt: null, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'HOUSEHOLD_INVITATION_REVOKED' } });
+    });
+    return { id: invitation.id, revoked: true };
+  }
+  @Post('spaces/:id/household-members/:memberId/role') async updateHouseholdMemberRole(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('memberId') memberId: string,
+    @Body() body: unknown,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    if (membership.role !== 'OWNER' && membership.role !== 'ADMIN') throw new ForbiddenException();
+    const input = validate(householdMemberRoleInput, body);
+    const validMemberId = validate(z.string().uuid(), memberId);
+    const target = await db.membership.findFirst({ where: { id: validMemberId, spaceId: membership.spaceId } });
+    if (!target) throw new NotFoundException();
+    if (target.role === 'OWNER' || target.userId === user.id) throw new ForbiddenException('The household owner cannot be changed here, and you cannot change your own role.');
+    if (membership.role === 'ADMIN' && (target.role === 'ADMIN' || input.role === 'ADMIN')) {
+      throw new ForbiddenException('Only the household owner can manage admin roles.');
+    }
+    const updated = await db.$transaction(async tx => {
+      const result = await tx.membership.update({ where: { id: target.id }, data: { role: input.role } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'HOUSEHOLD_MEMBER_ROLE_UPDATED' } });
+      return result;
+    });
+    return { id: updated.id, role: updated.role };
+  }
+  @Post('spaces/:id/household-members/:memberId/remove') async removeHouseholdMember(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('memberId') memberId: string,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    const validMemberId = validate(z.string().uuid(), memberId);
+    const target = await db.membership.findFirst({ where: { id: validMemberId, spaceId: membership.spaceId } });
+    if (!target) throw new NotFoundException();
+    const isSelf = target.userId === user.id;
+    const isManager = membership.role === 'OWNER' || membership.role === 'ADMIN';
+    if (!isSelf && !isManager) throw new ForbiddenException();
+    if (target.role === 'OWNER') throw new ConflictException('The household owner cannot leave or be removed before transferring ownership.');
+    if (membership.role === 'ADMIN' && !isSelf && target.role === 'ADMIN') throw new ForbiddenException('Only the household owner can remove an admin.');
+    await db.$transaction(async tx => {
+      await tx.membership.delete({ where: { id: target.id } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: isSelf ? 'HOUSEHOLD_MEMBER_LEFT' : 'HOUSEHOLD_MEMBER_REMOVED' } });
+    });
+    return { id: target.id, removed: true };
+  }
+  @Post('spaces/:id/dependants') async createDependant(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    if (membership.role !== 'OWNER' && membership.role !== 'ADMIN') throw new ForbiddenException();
+    const input = validate(dependantInput, body);
+    if (input.dateOfBirth && input.dateOfBirth > toDateOnly(new Date())) throw new BadRequestException('Date of birth cannot be in the future.');
+    const dependant = await db.$transaction(async tx => {
+      const result = await tx.dependant.create({
+        data: {
+          spaceId: membership.spaceId,
+          name: input.name,
+          relationship: input.relationship,
+          dateOfBirth: input.dateOfBirth ? new Date(`${input.dateOfBirth}T00:00:00.000Z`) : undefined,
+          createdBy: user.id,
+        },
+      });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'HOUSEHOLD_DEPENDANT_CREATED' } });
+      return result;
+    });
+    return { id: dependant.id, name: dependant.name, relationship: dependant.relationship, dateOfBirth: dependant.dateOfBirth ? toDateOnly(dependant.dateOfBirth) : null };
+  }
+  @Post('spaces/:id/dependants/:dependantId/remove') async removeDependant(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('dependantId') dependantId: string,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    if (membership.role !== 'OWNER' && membership.role !== 'ADMIN') throw new ForbiddenException();
+    const validDependantId = validate(z.string().uuid(), dependantId);
+    const dependant = await db.dependant.findFirst({ where: { id: validDependantId, spaceId: membership.spaceId } });
+    if (!dependant) throw new NotFoundException();
+    await db.$transaction(async tx => {
+      await tx.dependant.delete({ where: { id: dependant.id } });
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'HOUSEHOLD_DEPENDANT_REMOVED' } });
+    });
+    return { id: dependant.id, removed: true };
+  }
+  @Get('spaces/:id/ownership') async householdOwnership(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    return this.householdOwnershipSummary(membership.spaceId, new Date(`${toDateOnly(new Date())}T00:00:00.000Z`));
+  }
+  @Post('spaces/:id/ownership') async updateHouseholdOwnership(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    if (membership.role === 'VIEWER') throw new ForbiddenException('View-only household members cannot update ownership.');
+    const input = validate(householdOwnershipInput, body);
+    await db.$transaction(async tx => {
+      let itemExists = false;
+      if (input.entityType === 'SAVINGS_ACCOUNT') {
+        await tx.$queryRaw`SELECT "id" FROM "SavingsAccount" WHERE "id" = ${input.entityId} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+        itemExists = Boolean(await tx.savingsAccount.findFirst({ where: { id: input.entityId, spaceId: membership.spaceId }, select: { id: true } }));
+      } else if (input.entityType === 'INVESTMENT') {
+        await tx.$queryRaw`SELECT i."id" FROM "Investment" i JOIN "InvestmentAccount" a ON a."id" = i."accountId" WHERE i."id" = ${input.entityId} AND a."spaceId" = ${membership.spaceId} FOR UPDATE OF i`;
+        itemExists = Boolean(await tx.investment.findFirst({ where: { id: input.entityId, account: { spaceId: membership.spaceId } }, select: { id: true } }));
+      } else {
+        await tx.$queryRaw`SELECT "id" FROM "Liability" WHERE "id" = ${input.entityId} AND "spaceId" = ${membership.spaceId} FOR UPDATE`;
+        itemExists = Boolean(await tx.liability.findFirst({ where: { id: input.entityId, spaceId: membership.spaceId }, select: { id: true } }));
+      }
+      if (!itemExists) throw new NotFoundException('The selected asset or liability is not in this Household Space.');
+
+      const [activeMemberships, existing] = await Promise.all([
+        tx.membership.findMany({ where: { spaceId: membership.spaceId }, select: { userId: true } }),
+        tx.householdOwnershipAllocation.findMany({
+          where: { spaceId: membership.spaceId, entityType: input.entityType, entityId: input.entityId },
+        }),
+      ]);
+      const activeOwnerIds = new Set(activeMemberships.map(item => item.userId));
+      const submitted = new Map(input.allocations.map(item => [item.ownerUserId, item.percentage]));
+      const existingByUser = new Map(existing.map(item => [item.ownerUserId, item]));
+      for (const allocation of input.allocations) {
+        if (!activeOwnerIds.has(allocation.ownerUserId) && !existingByUser.has(allocation.ownerUserId)) {
+          throw new BadRequestException('New ownership can only be assigned to current household members.');
+        }
+      }
+      for (const allocation of existing) {
+        if (!activeOwnerIds.has(allocation.ownerUserId)) {
+          const submittedPercentage = submitted.get(allocation.ownerUserId);
+          if (!submittedPercentage || !new Prisma.Decimal(submittedPercentage).equals(allocation.percentage)) {
+            throw new ConflictException('A departed member’s historical ownership share cannot be changed or removed.');
+          }
+        }
+      }
+      const submittedIds = input.allocations.map(item => item.ownerUserId);
+      const activeOwnersToRemove = [...activeOwnerIds].filter(ownerId => !submittedIds.includes(ownerId));
+      await tx.householdOwnershipAllocation.deleteMany({
+        where: {
+          spaceId: membership.spaceId,
+          entityType: input.entityType,
+          entityId: input.entityId,
+          ownerUserId: { in: activeOwnersToRemove },
+        },
+      });
+      for (const allocation of input.allocations) {
+        await tx.householdOwnershipAllocation.upsert({
+          where: {
+            spaceId_entityType_entityId_ownerUserId: {
+              spaceId: membership.spaceId,
+              entityType: input.entityType,
+              entityId: input.entityId,
+              ownerUserId: allocation.ownerUserId,
+            },
+          },
+          create: {
+            spaceId: membership.spaceId,
+            entityType: input.entityType,
+            entityId: input.entityId,
+            ownerUserId: allocation.ownerUserId,
+            percentage: allocation.percentage,
+          },
+          update: { percentage: allocation.percentage },
+        });
+      }
+      await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'HOUSEHOLD_OWNERSHIP_UPDATED' } });
+    });
+    return this.householdOwnershipSummary(membership.spaceId, new Date(`${toDateOnly(new Date())}T00:00:00.000Z`));
+  }
+  @Get('spaces/:id/shares') async personalFinancialShares(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'PERSONAL') throw new NotFoundException();
+    const shares = await db.sharedFinancialItem.findMany({
+      where: { sourceSpaceId: membership.spaceId },
+      include: { targetHouseholdSpace: { select: { id: true, name: true } } },
+      orderBy: [{ revokedAt: 'asc' }, { createdAt: 'desc' }],
+    });
+    return shares.map(share => ({
+      id: share.id,
+      entityType: share.entityType,
+      entityId: share.entityId,
+      targetHouseholdSpaceId: share.targetHouseholdSpaceId,
+      targetHouseholdName: share.targetHouseholdSpace.name,
+      permission: share.permission,
+      createdAt: share.createdAt.toISOString(),
+      revokedAt: share.revokedAt?.toISOString() ?? null,
+    }));
+  }
+  @Post('spaces/:id/shares') async sharePersonalFinancialItem(@Req() req: Request, @Param('id') id: string, @Body() body: unknown) {
+    const user = await this.identity.user(req);
+    const sourceMembership = await this.spaceMembership(user.id, id);
+    if (sourceMembership.space.type !== 'PERSONAL') throw new NotFoundException();
+    const input = validate(sharedFinancialItemInput, body);
+    const targetMembership = await this.spaceMembership(user.id, input.targetHouseholdSpaceId);
+    if (targetMembership.space.type !== 'HOUSEHOLD') throw new BadRequestException('Choose a Household Space that you belong to.');
+    if (targetMembership.role === 'VIEWER') throw new ForbiddenException('View-only household members cannot share personal records.');
+    const entityId = input.entityId;
+    let belongsToPersonalSpace = false;
+    if (input.entityType === 'SAVINGS_ACCOUNT') {
+      belongsToPersonalSpace = Boolean(await db.savingsAccount.findFirst({ where: { id: entityId, spaceId: sourceMembership.spaceId }, select: { id: true } }));
+    } else if (input.entityType === 'INVESTMENT') {
+      belongsToPersonalSpace = Boolean(await db.investment.findFirst({ where: { id: entityId, account: { spaceId: sourceMembership.spaceId } }, select: { id: true } }));
+    } else if (input.entityType === 'LIABILITY') {
+      belongsToPersonalSpace = Boolean(await db.liability.findFirst({ where: { id: entityId, spaceId: sourceMembership.spaceId }, select: { id: true } }));
+    } else {
+      belongsToPersonalSpace = Boolean(await db.financialGoal.findFirst({ where: { id: entityId, spaceId: sourceMembership.spaceId }, select: { id: true } }));
+    }
+    if (!belongsToPersonalSpace) throw new NotFoundException('The selected record is not in your Personal Space.');
+    const sharedItem = await db.$transaction(async tx => {
+      const result = await tx.sharedFinancialItem.upsert({
+        where: {
+          sourceSpaceId_entityType_entityId_targetHouseholdSpaceId: {
+            sourceSpaceId: sourceMembership.spaceId,
+            entityType: input.entityType,
+            entityId,
+            targetHouseholdSpaceId: targetMembership.spaceId,
+          },
+        },
+        create: {
+          sourceSpaceId: sourceMembership.spaceId,
+          entityType: input.entityType,
+          entityId,
+          targetHouseholdSpaceId: targetMembership.spaceId,
+          sharedBy: user.id,
+          permission: input.permission,
+        },
+        update: { sharedBy: user.id, permission: input.permission, revokedAt: null },
+      });
+      await tx.auditEvent.createMany({
+        data: [
+          { actorUserId: user.id, spaceId: sourceMembership.spaceId, action: 'PERSONAL_FINANCIAL_ITEM_SHARED' },
+          { actorUserId: user.id, spaceId: targetMembership.spaceId, action: 'PERSONAL_FINANCIAL_ITEM_SHARED' },
+        ],
+      });
+      return result;
+    });
+    return { id: sharedItem.id, entityType: sharedItem.entityType, permission: sharedItem.permission, revokedAt: null };
+  }
+  @Post('spaces/:id/shares/:shareId/revoke') async revokePersonalFinancialShare(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Param('shareId') shareId: string,
+  ) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'PERSONAL') throw new NotFoundException();
+    const validShareId = validate(z.string().uuid(), shareId);
+    const share = await db.sharedFinancialItem.findFirst({ where: { id: validShareId, sourceSpaceId: membership.spaceId, revokedAt: null } });
+    if (!share) throw new NotFoundException();
+    await db.$transaction(async tx => {
+      await tx.sharedFinancialItem.update({ where: { id: share.id }, data: { revokedAt: new Date() } });
+      await tx.auditEvent.createMany({
+        data: [
+          { actorUserId: user.id, spaceId: membership.spaceId, action: 'PERSONAL_FINANCIAL_SHARE_REVOKED' },
+          { actorUserId: user.id, spaceId: share.targetHouseholdSpaceId, action: 'PERSONAL_FINANCIAL_SHARE_REVOKED' },
+        ],
+      });
+    });
+    return { id: share.id, revoked: true };
+  }
+  @Get('spaces/:id/shared-personal-items') async sharedPersonalFinancialItems(@Req() req: Request, @Param('id') id: string) {
+    const user = await this.identity.user(req);
+    const membership = await this.spaceMembership(user.id, id);
+    if (membership.space.type !== 'HOUSEHOLD') throw new NotFoundException();
+    const shares = await db.sharedFinancialItem.findMany({
+      where: { targetHouseholdSpaceId: membership.spaceId, revokedAt: null, sourceSpace: { type: 'PERSONAL' } },
+      include: { sharer: { select: { name: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return Promise.all(shares.map(async share => ({
+      sharedBy: share.sharer.name,
+      ...await this.sharedPersonalItemView(share),
+    })));
+  }
   @Get('spaces/:id/net-worth') async netWorth(@Req() req: Request, @Param('id') id: string) {
     const user = await this.identity.user(req);
     const membership = await this.spaceMembership(user.id, id);
     const snapshotDate = new Date(`${toDateOnly(new Date())}T00:00:00.000Z`);
-    const [current, snapshots] = await Promise.all([
+    const [current, snapshots, ownership] = await Promise.all([
       calculateNetWorth(membership.spaceId, snapshotDate, membership.space.baseCurrency),
       db.netWorthSnapshot.findMany({
         where: { spaceId: membership.spaceId },
@@ -612,11 +1163,15 @@ class Api {
         orderBy: { snapshotDate: 'desc' },
         take: 24,
       }),
+      membership.space.type === 'HOUSEHOLD'
+        ? this.householdOwnershipSummary(membership.spaceId, snapshotDate)
+        : Promise.resolve(null),
     ]);
     return {
       snapshotDate: toDateOnly(snapshotDate),
       baseCurrency: membership.space.baseCurrency.trim(),
       current,
+      ...(ownership ? { ownership } : {}),
       snapshots: snapshots.map(snapshot => ({
         id: snapshot.id,
         snapshotDate: toDateOnly(snapshot.snapshotDate),
@@ -1106,6 +1661,240 @@ class Api {
       },
       netCashFlow: subtractDecimals(incomeTotal, expenseTotal),
       budget: { limit: budgetLimit, spent: budgetSpent, remaining: subtractDecimals(budgetLimit, budgetSpent), allocations },
+    };
+  }
+  private async sharedPersonalItemView(share: Prisma.SharedFinancialItemGetPayload<{}>) {
+    const shared = {
+      id: share.id,
+      entityType: share.entityType,
+      permission: share.permission,
+    };
+    if (share.entityType === 'SAVINGS_ACCOUNT') {
+      const account = await db.savingsAccount.findFirst({
+        where: { id: share.entityId, spaceId: share.sourceSpaceId },
+        include: { transactions: { orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }] } },
+      });
+      if (!account) return { ...shared, unavailable: true };
+      const balance = subtractDecimals(
+        addDecimals(account.openingBalance.toString(), ...account.transactions.filter(item => item.type === 'DEPOSIT').map(item => item.amount.toString())),
+        addDecimals(...account.transactions.filter(item => item.type === 'WITHDRAWAL').map(item => item.amount.toString())),
+      );
+      return {
+        ...shared,
+        currencyCode: account.currencyCode.trim(),
+        balance,
+        ...(share.permission === 'BALANCE_ONLY' ? {} : { name: account.name }),
+        ...(share.permission === 'FULL_READ' ? {
+          openingBalance: account.openingBalance.toString(),
+          openedAt: toDateOnly(account.openedAt),
+          transactions: account.transactions.map(item => ({
+            type: item.type,
+            amount: item.amount.toString(),
+            transactionDate: toDateOnly(item.transactionDate),
+            description: item.description,
+          })),
+        } : {}),
+      };
+    }
+    if (share.entityType === 'INVESTMENT') {
+      const investment = await db.investment.findFirst({
+        where: { id: share.entityId, account: { spaceId: share.sourceSpaceId } },
+        include: {
+          transactions: { orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }] },
+          valuations: { orderBy: [{ valuationDate: 'desc' }, { createdAt: 'desc' }] },
+        },
+      });
+      if (!investment) return { ...shared, unavailable: true };
+      const value = investmentValueAt(investment, new Date(`${toDateOnly(new Date())}T00:00:00.000Z`));
+      return {
+        ...shared,
+        currencyCode: investment.currencyCode.trim(),
+        balance: value,
+        ...(share.permission === 'BALANCE_ONLY' ? {} : {
+          name: investment.name,
+          type: investment.type,
+          maturityDate: investment.maturityDate ? toDateOnly(investment.maturityDate) : null,
+        }),
+        ...(share.permission === 'FULL_READ' ? {
+          transactions: investment.transactions.map(item => ({
+            type: item.type,
+            amount: item.amount.toString(),
+            transactionDate: toDateOnly(item.transactionDate),
+            description: item.description,
+          })),
+          valuations: investment.valuations.map(item => ({
+            valuationDate: toDateOnly(item.valuationDate),
+            marketValue: item.marketValue.toString(),
+            method: item.method,
+          })),
+        } : {}),
+      };
+    }
+    if (share.entityType === 'LIABILITY') {
+      const liability = await db.liability.findFirst({
+        where: { id: share.entityId, spaceId: share.sourceSpaceId },
+        include: { payments: { orderBy: [{ paidAt: 'asc' }, { createdAt: 'asc' }] } },
+      });
+      if (!liability) return { ...shared, unavailable: true };
+      const principalPaid = addDecimals(...liability.payments.map(item => item.principalAmount.toString()));
+      const balance = subtractDecimals(liability.openingBalance.toString(), principalPaid);
+      return {
+        ...shared,
+        currencyCode: liability.currencyCode.trim(),
+        balance,
+        ...(share.permission === 'BALANCE_ONLY' ? {} : { name: liability.name, type: liability.type }),
+        ...(share.permission === 'FULL_READ' ? {
+          originalAmount: liability.originalAmount.toString(),
+          openingBalance: liability.openingBalance.toString(),
+          annualInterestRate: liability.annualInterestRate.toString(),
+          monthlyPayment: liability.monthlyPayment?.toString() ?? null,
+          payments: liability.payments.map(item => ({
+            amount: item.amount.toString(),
+            principalAmount: item.principalAmount.toString(),
+            paidAt: toDateOnly(item.paidAt),
+            description: item.description,
+          })),
+        } : {}),
+      };
+    }
+    const goal = await db.financialGoal.findFirst({
+      where: { id: share.entityId, spaceId: share.sourceSpaceId },
+      include: { contributions: { orderBy: [{ contributionDate: 'asc' }, { createdAt: 'asc' }] } },
+    });
+    if (!goal) return { ...shared, unavailable: true };
+    const contributions = addDecimals(...goal.contributions.filter(item => item.type === 'CONTRIBUTION').map(item => item.amount.toString()));
+    const withdrawals = addDecimals(...goal.contributions.filter(item => item.type === 'WITHDRAWAL').map(item => item.amount.toString()));
+    const balance = subtractDecimals(contributions, withdrawals);
+    return {
+      ...shared,
+      currencyCode: goal.currencyCode.trim(),
+      balance,
+      ...(share.permission === 'BALANCE_ONLY' ? {} : {
+        name: goal.name,
+        targetAmount: goal.targetAmount.toString(),
+        targetDate: goal.targetDate ? toDateOnly(goal.targetDate) : null,
+      }),
+      ...(share.permission === 'FULL_READ' ? {
+        description: goal.description,
+        contributions: goal.contributions.map(item => ({
+          type: item.type,
+          amount: item.amount.toString(),
+          contributionDate: toDateOnly(item.contributionDate),
+          description: item.description,
+        })),
+      } : {}),
+    };
+  }
+  private async householdOwnershipSummary(spaceId: string, asOfDate: Date) {
+    const [allocations, memberships, accounts, liabilities, investments] = await Promise.all([
+      db.householdOwnershipAllocation.findMany({
+        where: { spaceId },
+        include: { owner: { select: { id: true, name: true, email: true } } },
+        orderBy: [{ entityType: 'asc' }, { entityId: 'asc' }, { ownerUserId: 'asc' }],
+      }),
+      db.membership.findMany({ where: { spaceId }, select: { userId: true } }),
+      db.savingsAccount.findMany({
+        where: { spaceId, openedAt: { lte: asOfDate } },
+        include: { transactions: { where: { transactionDate: { lte: asOfDate } } } },
+      }),
+      db.liability.findMany({
+        where: { spaceId, startDate: { lte: asOfDate } },
+        include: { payments: { where: { paidAt: { lte: asOfDate } } } },
+      }),
+      db.investment.findMany({
+        where: { account: { spaceId }, startDate: { lte: asOfDate } },
+        include: {
+          transactions: { where: { transactionDate: { lte: asOfDate } } },
+          valuations: { where: { valuationDate: { lte: asOfDate } } },
+        },
+      }),
+    ]);
+    const activeOwnerIds = new Set(memberships.map(item => item.userId));
+    const values = new Map<string, { entityType: 'SAVINGS_ACCOUNT' | 'INVESTMENT' | 'LIABILITY'; entityId: string; name: string; currencyCode: string; value: string | null }>();
+    for (const account of accounts) {
+      const balance = subtractDecimals(
+        addDecimals(account.openingBalance.toString(), ...account.transactions.filter(item => item.type === 'DEPOSIT').map(item => item.amount.toString())),
+        addDecimals(...account.transactions.filter(item => item.type === 'WITHDRAWAL').map(item => item.amount.toString())),
+      );
+      values.set(`SAVINGS_ACCOUNT:${account.id}`, {
+        entityType: 'SAVINGS_ACCOUNT', entityId: account.id, name: account.name, currencyCode: account.currencyCode.trim(), value: balance,
+      });
+    }
+    for (const liability of liabilities) {
+      const outstanding = subtractDecimals(
+        liability.openingBalance.toString(),
+        addDecimals(...liability.payments.map(item => item.principalAmount.toString())),
+      );
+      values.set(`LIABILITY:${liability.id}`, {
+        entityType: 'LIABILITY', entityId: liability.id, name: liability.name, currencyCode: liability.currencyCode.trim(), value: outstanding,
+      });
+    }
+    for (const investment of investments) {
+      const value = investmentValueAt(investment, asOfDate);
+      values.set(`INVESTMENT:${investment.id}`, {
+        entityType: 'INVESTMENT', entityId: investment.id, name: investment.name, currencyCode: investment.currencyCode.trim(), value,
+      });
+    }
+    const allocationKeys = new Set(allocations.map(item => `${item.entityType}:${item.entityId}`));
+    const memberValues = new Map<string, {
+      owner: { id: string; name: string; email: string };
+      currencies: Map<string, { assets: string; liabilities: string }>;
+    }>();
+    const allocationViews = allocations.map(allocation => {
+      const key = `${allocation.entityType}:${allocation.entityId}`;
+      const asset = values.get(key);
+      const percentage = allocation.percentage.toString();
+      const ownedAmount = asset?.value === null || !asset
+        ? null
+        : new Prisma.Decimal(asset.value).mul(allocation.percentage).dividedBy(100)
+          .toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP).toFixed(4);
+      if (asset && ownedAmount !== null) {
+        let member = memberValues.get(allocation.ownerUserId);
+        if (!member) {
+          member = { owner: allocation.owner, currencies: new Map() };
+          memberValues.set(allocation.ownerUserId, member);
+        }
+        const currencyTotals = member.currencies.get(asset.currencyCode) ?? { assets: '0', liabilities: '0' };
+        if (allocation.entityType === 'LIABILITY') {
+          currencyTotals.liabilities = addDecimals(currencyTotals.liabilities, ownedAmount);
+        } else {
+          currencyTotals.assets = addDecimals(currencyTotals.assets, ownedAmount);
+        }
+        member.currencies.set(asset.currencyCode, currencyTotals);
+      }
+      return {
+        id: allocation.id,
+        entityType: allocation.entityType,
+        entityId: allocation.entityId,
+        name: asset?.name ?? null,
+        currencyCode: asset?.currencyCode ?? null,
+        value: asset?.value ?? null,
+        percentage,
+        ownedAmount,
+        owner: {
+          id: allocation.owner.id,
+          name: allocation.owner.name,
+          email: allocation.owner.email,
+          isCurrentMember: activeOwnerIds.has(allocation.owner.id),
+        },
+      };
+    });
+    const unallocated = [...values.values()]
+      .filter(asset => !allocationKeys.has(`${asset.entityType}:${asset.entityId}`))
+      .map(asset => ({ ...asset, reason: asset.value === null ? 'NOT_VALUED' : 'NO_OWNERSHIP_ALLOCATION' }));
+    return {
+      asOfDate: toDateOnly(asOfDate),
+      allocations: allocationViews,
+      unallocated,
+      memberShares: [...memberValues.values()].map(member => ({
+        owner: { ...member.owner, isCurrentMember: activeOwnerIds.has(member.owner.id) },
+        currencies: [...member.currencies.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currencyCode, totals]) => ({
+          currencyCode,
+          assets: totals.assets,
+          liabilities: totals.liabilities,
+          netWorth: subtractDecimals(totals.assets, totals.liabilities),
+        })),
+      })).sort((left, right) => left.owner.name.localeCompare(right.owner.name)),
     };
   }
   private async spaceMembership(userId: string, id: string) {
@@ -1742,6 +2531,17 @@ class Api {
           createdBy: user.id,
         },
       });
+      if (membership.space.type === 'HOUSEHOLD') {
+        await tx.householdOwnershipAllocation.create({
+          data: {
+            spaceId: membership.spaceId,
+            entityType: 'SAVINGS_ACCOUNT',
+            entityId: created.id,
+            ownerUserId: user.id,
+            percentage: '100',
+          },
+        });
+      }
       await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'SAVINGS_ACCOUNT_CREATED' } });
       return created;
     });
@@ -1946,6 +2746,17 @@ class Api {
           createdBy: user.id,
         },
       });
+      if (membership.space.type === 'HOUSEHOLD') {
+        await tx.householdOwnershipAllocation.create({
+          data: {
+            spaceId: membership.spaceId,
+            entityType: 'INVESTMENT',
+            entityId: investment.id,
+            ownerUserId: user.id,
+            percentage: '100',
+          },
+        });
+      }
       if (decimalToUnits(input.costBasis) > 0n) {
         await tx.investmentTransaction.create({
           data: {
@@ -2332,6 +3143,17 @@ class Api {
           createdBy: user.id,
         },
       });
+      if (membership.space.type === 'HOUSEHOLD') {
+        await tx.householdOwnershipAllocation.create({
+          data: {
+            spaceId: membership.spaceId,
+            entityType: 'LIABILITY',
+            entityId: created.id,
+            ownerUserId: user.id,
+            percentage: '100',
+          },
+        });
+      }
       await tx.auditEvent.create({ data: { actorUserId: user.id, spaceId: membership.spaceId, action: 'LIABILITY_CREATED' } });
       return created;
     });

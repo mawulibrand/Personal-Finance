@@ -685,6 +685,7 @@ FinancialRule
 - threshold
 - severity
 - enabled
+Platform-wide rule changes are limited to supported thresholds, severity and enabled state, and only explicitly allowlisted administrators may make them. Rule definitions and strategy behavior remain fixed; saved reviews are not recalculated when rules change.
 Rule priority:
 HIGH
 MEDIUM
@@ -709,6 +710,9 @@ Ama: 60%
 Kojo: 40%
 Total: 100%
 Ownership validation requires the active ownership percentages to total 100%.
+New Household savings accounts, investments, and liabilities are initially attributed 100% to the member who records them. Members can redistribute shares; percentages use exact decimal validation and must total 100%.
+Household net worth counts each Household-owned asset and liability once. A separate member-level view attributes each record by its ownership percentages, grouped by original currency, without FX conversion.
+If a member leaves, their existing ownership allocation remains attached to that user and is included in the member breakdown as a former-member share. It cannot be silently removed or changed during another member's allocation update.
 Selective sharing allows Personal information to be shown to a Household without transferring ownership.
 SharedFinancialItem
 - source_space_id

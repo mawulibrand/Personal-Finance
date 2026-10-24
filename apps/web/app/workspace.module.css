@@ -38,6 +38,25 @@
   letter-spacing: 1.7px;
 }
 
+.spacePicker {
+  display: grid;
+  gap: 7px;
+  margin: 0 7px 14px;
+  color: #a7c3b4;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.spacePicker select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 8px;
+  border: 1px solid #4c7263;
+  border-radius: 7px;
+  background: #1b493b;
+  color: #f7f8f3;
+}
+
 .nav {
   flex: 1;
   display: grid;

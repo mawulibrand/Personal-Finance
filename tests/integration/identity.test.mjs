@@ -26,6 +26,34 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   const login = await request('auth/login', { email, password });
   assert.equal(login.status, 201);
   assert.ok(login.cookie);
+  assert.equal((await request('auth/me', undefined, login.cookie)).body.canManageFinancialRules, false);
+  assert.equal((await request('admin/financial-rules', undefined, login.cookie)).status, 403);
+  assert.equal((await request('admin/financial-rules')).status, 401);
+  const configuredAdminEmail = process.env.FINANCIAL_RULE_ADMIN_TEST_EMAIL;
+  if (configuredAdminEmail) {
+    const adminPassword = 'a long test admin password 123!';
+    const existingAdmin = await db.user.findUnique({ where: { email: configuredAdminEmail } });
+    if (!existingAdmin) {
+      assert.equal((await request('auth/register', { name: 'Rule Admin', email: configuredAdminEmail, password: adminPassword })).status, 201);
+      const adminToken = await emailToken(configuredAdminEmail, 'Verify your email');
+      assert.equal((await request('auth/verify', { token: adminToken })).status, 201);
+    }
+    const adminLogin = await request('auth/login', { email: configuredAdminEmail, password: adminPassword });
+    assert.equal(adminLogin.status, 201);
+    assert.equal((await request('auth/me', undefined, adminLogin.cookie)).body.canManageFinancialRules, true);
+    const ruleList = await request('admin/financial-rules', undefined, adminLogin.cookie);
+    assert.equal(ruleList.status, 200);
+    const savingsRule = ruleList.body.find(rule => rule.code === 'SAVINGS_RATE_BELOW_TARGET' && rule.market === '*');
+    assert.ok(savingsRule);
+    assert.equal((await request(`admin/financial-rules/${savingsRule.id}`, {
+      enabled: savingsRule.enabled, threshold: '101', severity: savingsRule.severity,
+    }, adminLogin.cookie)).status, 400);
+    const updatedRule = await request(`admin/financial-rules/${savingsRule.id}`, {
+      enabled: savingsRule.enabled, threshold: savingsRule.threshold, severity: savingsRule.severity,
+    }, adminLogin.cookie);
+    assert.equal(updatedRule.status, 201);
+    assert.equal(updatedRule.body.threshold, savingsRule.threshold);
+  }
   const spaces = await request('spaces', undefined, login.cookie);
   assert.equal(spaces.body.length, 1);
   assert.equal(spaces.body[0].type, 'PERSONAL');
@@ -457,6 +485,164 @@ test('identity flow protects spaces and invalidates consumed tokens and reset se
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/payday-routines/${goalRoutineEntry.id}/skip`, {}, bob.cookie)).status, 404);
   assert.equal((await request(`spaces/${bobSpaces.body[0].id}/expenses`, { categoryId: customCategory.body.id, amount: '3', spentAt: receivedDate }, bob.cookie)).status, 400);
   assert.equal((await request(expensesPath, undefined, bob.cookie)).status, 404);
+  const household = await request('spaces', { name: 'Shared home', baseCurrency: 'GHS' }, login.cookie);
+  assert.equal(household.status, 201);
+  assert.equal(household.body.type, 'HOUSEHOLD');
+  assert.equal(household.body.role, 'OWNER');
+  const householdId = household.body.id;
+  const ownerUserId = (await request('auth/me', undefined, login.cookie)).body.id;
+  const householdPath = `spaces/${householdId}/household`;
+  assert.equal((await request(householdPath, undefined, login.cookie)).body.members[0].role, 'OWNER');
+  const householdSavingsPath = `spaces/${householdId}/savings-accounts`;
+  const householdSavings = await request(householdSavingsPath, {
+    name: 'Joint savings', currencyCode: 'GHS', openingBalance: '200', openedAt: receivedDate,
+  }, login.cookie);
+  assert.equal(householdSavings.status, 201);
+  const householdLiabilitiesPath = `spaces/${householdId}/liabilities`;
+  const householdLiability = await request(householdLiabilitiesPath, {
+    type: 'PERSONAL_LOAN', name: 'Shared home loan', currencyCode: 'GHS',
+    originalAmount: '50', openingBalance: '50', annualInterestRate: '0', startDate: receivedDate,
+  }, login.cookie);
+  assert.equal(householdLiability.status, 201);
+  assert.equal((await request(`spaces/${spaces.body[0].id}/ownership`, undefined, login.cookie)).status, 404);
+  assert.equal((await request(`spaces/${householdId}/ownership`, undefined, login.cookie)).body.allocations.length, 2);
+  const householdSharedItemsPath = `spaces/${householdId}/shared-personal-items`;
+  assert.deepEqual(await request(householdSharedItemsPath, undefined, login.cookie).then(result => result.body), []);
+  const dependant = await request(`spaces/${householdId}/dependants`, {
+    name: 'Taylor', relationship: 'Child', dateOfBirth: '2015-04-12',
+  }, login.cookie);
+  assert.equal(dependant.status, 201);
+  assert.equal(dependant.body.dateOfBirth, '2015-04-12');
+  assert.equal((await request(`spaces/${householdId}/dependants`, {
+    name: 'Future date', relationship: 'Child', dateOfBirth: '2999-01-01',
+  }, login.cookie)).status, 400);
+  const personalSharesPath = `spaces/${spaces.body[0].id}/shares`;
+  const personalShare = await request(personalSharesPath, {
+    targetHouseholdSpaceId: householdId,
+    entityType: 'SAVINGS_ACCOUNT',
+    entityId: savingsAccount.body.id,
+    permission: 'BALANCE_ONLY',
+  }, login.cookie);
+  assert.equal(personalShare.status, 201);
+  const invitation = await request(`spaces/${householdId}/household-invitations`, {
+    email: secondEmail, role: 'MEMBER',
+  }, login.cookie);
+  assert.equal(invitation.status, 201);
+  const invitationEmail = await db.emailOutbox.findFirstOrThrow({
+    where: { recipient: secondEmail, subject: { contains: 'Invitation to join Shared home' } },
+    orderBy: { createdAt: 'desc' },
+  });
+  const invitationToken = invitationEmail.body.match(/invite=([A-Za-z0-9_-]+)/)?.[1];
+  assert.ok(invitationToken);
+  assert.equal((await request('household-invitations/accept', { token: invitationToken }, login.cookie)).status, 403);
+  assert.equal((await request(householdSharedItemsPath, undefined, bob.cookie)).status, 404);
+  const acceptedInvitation = await request('household-invitations/accept', { token: invitationToken }, bob.cookie);
+  assert.equal(acceptedInvitation.status, 201);
+  assert.equal(acceptedInvitation.body.spaceId, householdId);
+  const bobSpacesAfterJoin = await request('spaces', undefined, bob.cookie);
+  assert.ok(bobSpacesAfterJoin.body.some(space => space.id === householdId && space.type === 'HOUSEHOLD'));
+  const bobUserId = (await request('auth/me', undefined, bob.cookie)).body.id;
+  assert.equal((await request(`spaces/${spaces.body[0].id}/dashboard`, undefined, bob.cookie)).status, 404);
+  const memberDetails = await request(householdPath, undefined, bob.cookie);
+  assert.equal(memberDetails.status, 200);
+  assert.equal(memberDetails.body.role, 'MEMBER');
+  assert.equal(memberDetails.body.dependants[0].name, 'Taylor');
+  for (const [entityType, entityId, percentages] of [
+    ['SAVINGS_ACCOUNT', householdSavings.body.id, [{ ownerUserId, percentage: '60' }, { ownerUserId: bobUserId, percentage: '40' }]],
+    ['LIABILITY', householdLiability.body.id, [{ ownerUserId, percentage: '40' }, { ownerUserId: bobUserId, percentage: '60' }]],
+  ]) {
+    assert.equal((await request(`spaces/${householdId}/ownership`, { entityType, entityId, allocations: percentages.slice(0, 1) }, login.cookie)).status, 400);
+    assert.equal((await request(`spaces/${householdId}/ownership`, { entityType, entityId, allocations: percentages }, login.cookie)).status, 201);
+  }
+  const householdGoalsPath = `spaces/${householdId}/goals`;
+  const householdGoal = await request(householdGoalsPath, {
+    name: 'Household education fund', targetAmount: '1000', currencyCode: 'GHS', targetDate: '2030-12-31',
+  }, bob.cookie);
+  assert.equal(householdGoal.status, 201);
+  assert.equal((await request(`${householdGoalsPath}/${householdGoal.body.id}/contributions`, {
+    type: 'CONTRIBUTION', amount: '25', contributionDate: receivedDate,
+  }, bob.cookie)).status, 201);
+  const householdBudgetPath = `spaces/${householdId}/budgets`;
+  const householdCategories = await request(`spaces/${householdId}/categories`, undefined, bob.cookie);
+  const householdExpenseCategory = householdCategories.body.find(category => category.type === 'EXPENSE');
+  assert.ok(householdExpenseCategory);
+  const householdMonth = receivedDate.slice(0, 7);
+  assert.equal((await request(`${householdBudgetPath}/allocations`, {
+    month: householdMonth, categoryId: householdExpenseCategory.id, limitAmount: '300',
+  }, bob.cookie)).status, 201);
+  assert.equal((await request(`spaces/${householdId}/expenses`, {
+    categoryId: householdExpenseCategory.id, amount: '75', spentAt: receivedDate,
+  }, bob.cookie)).status, 201);
+  const householdDashboard = await request(`spaces/${householdId}/dashboard?month=${householdMonth}`, undefined, login.cookie);
+  assert.equal(householdDashboard.status, 200);
+  assert.equal(householdDashboard.body.expenses.total, '75');
+  assert.equal(householdDashboard.body.budget.remaining, '225');
+  const householdNetWorth = await request(`spaces/${householdId}/net-worth`, undefined, login.cookie);
+  assert.equal(householdNetWorth.status, 200);
+  assert.equal(householdNetWorth.body.current.find(item => item.currencyCode === 'GHS').netWorth, '150');
+  const ownerHouseholdShare = householdNetWorth.body.ownership.memberShares.find(item => item.owner.id === ownerUserId);
+  const bobHouseholdShare = householdNetWorth.body.ownership.memberShares.find(item => item.owner.id === bobUserId);
+  assert.equal(ownerHouseholdShare.currencies[0].assets, '120');
+  assert.equal(ownerHouseholdShare.currencies[0].liabilities, '20');
+  assert.equal(ownerHouseholdShare.currencies[0].netWorth, '100');
+  assert.equal(bobHouseholdShare.currencies[0].assets, '80');
+  assert.equal(bobHouseholdShare.currencies[0].liabilities, '30');
+  assert.equal(bobHouseholdShare.currencies[0].netWorth, '50');
+  assert.equal((await request(`spaces/${householdId}/household-invitations`, { email: 'outsider@example.com', role: 'MEMBER' }, bob.cookie)).status, 403);
+  assert.equal((await request(`spaces/${householdId}/dependants`, { name: 'Unauthorized', relationship: 'Child' }, bob.cookie)).status, 403);
+  const householdSharedItems = await request(householdSharedItemsPath, undefined, bob.cookie);
+  assert.equal(householdSharedItems.status, 200);
+  assert.equal(householdSharedItems.body.length, 1);
+  assert.equal(householdSharedItems.body[0].entityType, 'SAVINGS_ACCOUNT');
+  assert.equal(householdSharedItems.body[0].balance, '30.25');
+  assert.equal(householdSharedItems.body[0].name, undefined);
+  assert.equal(householdSharedItems.body[0].transactions, undefined);
+  const bobPersonalSavings = await request(`spaces/${bobSpaces.body[0].id}/savings-accounts`, {
+    name: 'Bob private savings', currencyCode: 'GHS', openingBalance: '75', openedAt: receivedDate,
+  }, bob.cookie);
+  assert.equal(bobPersonalSavings.status, 201);
+  const bobShare = await request(`spaces/${bobSpaces.body[0].id}/shares`, {
+    targetHouseholdSpaceId: householdId,
+    entityType: 'SAVINGS_ACCOUNT',
+    entityId: bobPersonalSavings.body.id,
+    permission: 'SUMMARY',
+  }, bob.cookie);
+  assert.equal(bobShare.status, 201);
+  assert.ok((await request(householdSharedItemsPath, undefined, login.cookie)).body.some(item => item.name === 'Bob private savings'));
+  const householdMembers = memberDetails.body.members;
+  const memberToUpdate = householdMembers.find(member => member.email === secondEmail);
+  assert.ok(memberToUpdate);
+  assert.equal((await request(`${householdPath.replace('/household', '')}/household-members/${memberToUpdate.id}/role`, { role: 'VIEWER' }, login.cookie)).status, 201);
+  assert.equal((await request(`spaces/${bobSpaces.body[0].id}/shares`, undefined, login.cookie)).status, 404);
+  const viewerShareAttempt = await request(`spaces/${bobSpaces.body[0].id}/shares`, {
+    targetHouseholdSpaceId: householdId,
+    entityType: 'SAVINGS_ACCOUNT',
+    entityId: bobPersonalSavings.body.id,
+    permission: 'SUMMARY',
+  }, bob.cookie);
+  assert.equal(viewerShareAttempt.status, 403);
+  assert.equal((await request(`spaces/${householdId}/ownership`, {
+    entityType: 'SAVINGS_ACCOUNT',
+    entityId: householdSavings.body.id,
+    allocations: [{ ownerUserId, percentage: '60' }, { ownerUserId: bobUserId, percentage: '40' }],
+  }, bob.cookie)).status, 403);
+  assert.equal((await request(`${householdPath.replace('/household', '')}/household-members/${memberToUpdate.id}/role`, { role: 'MEMBER' }, login.cookie)).status, 201);
+  assert.equal((await request(`spaces/${spaces.body[0].id}/shares/${personalShare.body.id}/revoke`, {}, login.cookie)).status, 201);
+  assert.equal((await request(`spaces/${bobSpaces.body[0].id}/shares/${bobShare.body.id}/revoke`, {}, bob.cookie)).status, 201);
+  assert.deepEqual((await request(householdSharedItemsPath, undefined, bob.cookie)).body, []);
+  assert.equal((await request(`spaces/${householdId}/dependants/${dependant.body.id}/remove`, {}, login.cookie)).status, 201);
+  assert.equal((await request(`${householdPath.replace('/household', '')}/household-members/${memberToUpdate.id}/remove`, {}, login.cookie)).status, 201);
+  const householdAfterBobLeaves = await request(`spaces/${householdId}/net-worth`, undefined, login.cookie);
+  const formerBobShare = householdAfterBobLeaves.body.ownership.memberShares.find(item => item.owner.id === bobUserId);
+  assert.equal(householdAfterBobLeaves.body.current.find(item => item.currencyCode === 'GHS').netWorth, '150');
+  assert.equal(formerBobShare.owner.isCurrentMember, false);
+  assert.equal(formerBobShare.currencies[0].netWorth, '50');
+  assert.equal((await request(`spaces/${householdId}/ownership`, {
+    entityType: 'SAVINGS_ACCOUNT',
+    entityId: householdSavings.body.id,
+    allocations: [{ ownerUserId, percentage: '100' }],
+  }, login.cookie)).status, 409);
+  assert.equal((await request(householdPath, undefined, bob.cookie)).status, 404);
   const csrf = await fetch(`${apiOrigin}/auth/logout`, { method: 'POST', headers: { Origin: 'http://untrusted.example', Cookie: login.cookie, 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(csrf.status, 403);
   await request('auth/forgot-password', { email });
