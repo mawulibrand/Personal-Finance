@@ -37,20 +37,68 @@ type NotificationPreferencesView = {
   monthlyReviewEmail: boolean;
   updatedAt: string | null;
 };
+type InAppNotificationView = {
+  id: string;
+  type: 'PAYDAY_ROUTINE_READY';
+  title: string;
+  message: string;
+  readAt: string | null;
+  createdAt: string;
+};
 export function NotificationPreferences() {
   const [preferences, setPreferences] = useState<NotificationPreferencesView | null>(null);
+  const [notifications, setNotifications] = useState<InAppNotificationView[] | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   useEffect(() => {
     let active = true;
-    void api('notifications/preferences').then((result: NotificationPreferencesView) => {
-      if (active) setPreferences(result);
+    void Promise.all([
+      api('notifications/preferences') as Promise<NotificationPreferencesView>,
+      api('notifications') as Promise<{ notifications: InAppNotificationView[]; unreadCount: number }>,
+    ]).then(([preferenceResult, notificationResult]) => {
+      if (!active) return;
+      setPreferences(preferenceResult);
+      setNotifications(notificationResult.notifications);
+      setUnreadCount(notificationResult.unreadCount);
     }).catch(e => {
-      if (active) setError(e instanceof Error ? e.message : 'Unable to load notification preferences.');
+      if (active) setError(e instanceof Error ? e.message : 'Unable to load notifications and preferences.');
     });
     return () => { active = false; };
   }, []);
+  async function reloadNotifications() {
+    const result = await api('notifications') as { notifications: InAppNotificationView[]; unreadCount: number };
+    setNotifications(result.notifications);
+    setUnreadCount(result.unreadCount);
+  }
+  async function markRead(notificationId: string) {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api(`notifications/${notificationId}/read`, {});
+      await reloadNotifications();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to mark notification as read.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function markAllRead() {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api('notifications/read-all', {});
+      await reloadNotifications();
+      setMessage('All notifications marked as read.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to mark notifications as read.');
+    } finally {
+      setBusy(false);
+    }
+  }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!preferences) return;
@@ -83,11 +131,20 @@ export function NotificationPreferences() {
     { label: 'Monthly financial review reminders', inApp: 'monthlyReviewInApp', email: 'monthlyReviewEmail' },
   ] as const;
   return <main className="dashboard"><section className={`${workspaceStyles.page} ${workspaceStyles.dashboard}`}>
-    <p className="eyebrow">ACCOUNT SETTINGS</p><h1>Notification preferences</h1>
-    <p className="muted">Choose which future reminders you want to receive in-app or by email. Preferences are private to your account and start disabled. Saving preferences does not send notifications; delivery will be added separately.</p>
+    <p className="eyebrow">ACCOUNT</p><h1>Notifications</h1>
+    <p className="muted">View your in-app notifications and choose which future reminders you want to receive. Preferences are private to your account and start disabled.</p>
     {message && <p className="notice" role="status">{message}</p>}
     {error && <p className="error" role="alert">{error}</p>}
     <section className={workspaceStyles.panel}>
+      <div className={workspaceStyles.panelHeading}><div><p className="eyebrow">IN-APP INBOX · {unreadCount} UNREAD</p><h2>Recent notifications</h2></div>{unreadCount > 0 && <button type="button" disabled={busy} onClick={() => void markAllRead()}>Mark all read</button>}</div>
+      {notifications === null ? <p role="status">Loading notifications…</p> : notifications.length === 0 ? <p className="muted">You have no notifications yet. Opt in to reminders below to receive them when supported events occur.</p> : <ul className={workspaceStyles.breakdown}>{notifications.map(notification => <li key={notification.id}>
+        <span><strong>{notification.title}{notification.readAt ? '' : ' · NEW'}</strong><small>{notification.message}</small><small>{new Date(notification.createdAt).toLocaleString()}</small></span>
+        {!notification.readAt && <button type="button" disabled={busy} onClick={() => void markRead(notification.id)}>Mark read</button>}
+      </li>)}</ul>}
+    </section>
+    <section className={workspaceStyles.panel}>
+      <div className={workspaceStyles.panelHeading}><div><p className="eyebrow">ACCOUNT SETTINGS</p><h2>Notification preferences</h2></div></div>
+      <p className="muted">Choose which future reminders you want to receive in-app or by email. Email delivery is not active yet.</p>
       {!preferences ? <p role="status">Loading preferences…</p> : <form onSubmit={event => void save(event)}>
         <div className={workspaceStyles.panelHeading}><div><p className="eyebrow">OPTIONAL REMINDERS</p><h2>Delivery choices</h2></div></div>
         <div role="table" aria-label="Notification delivery preferences">

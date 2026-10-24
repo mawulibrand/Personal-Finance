@@ -704,6 +704,56 @@ class Api {
       updatedAt: preferences.updatedAt.toISOString(),
     };
   }
+  @Get('notifications') async notifications(@Req() req: Request, @Query('unreadOnly') unreadOnly?: string) {
+    const user = await this.identity.user(req);
+    const validatedUnreadOnly = unreadOnly === undefined
+      ? false
+      : validate(z.enum(['true', 'false']), unreadOnly) === 'true';
+    const where = { userId: user.id, ...(validatedUnreadOnly ? { readAt: null } : {}) };
+    const [items, unreadCount] = await Promise.all([
+      db.inAppNotification.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: 50,
+        select: { id: true, type: true, title: true, message: true, readAt: true, createdAt: true },
+      }),
+      db.inAppNotification.count({ where: { userId: user.id, readAt: null } }),
+    ]);
+    return {
+      notifications: items.map(item => ({
+        ...item,
+        readAt: item.readAt?.toISOString() ?? null,
+        createdAt: item.createdAt.toISOString(),
+      })),
+      unreadCount,
+    };
+  }
+  @Post('notifications/:notificationId/read') async markNotificationRead(
+    @Req() req: Request,
+    @Param('notificationId') notificationId: string,
+  ) {
+    const user = await this.identity.user(req);
+    const validNotificationId = validate(z.string().uuid(), notificationId);
+    const notification = await db.inAppNotification.findFirst({
+      where: { id: validNotificationId, userId: user.id },
+      select: { id: true, readAt: true },
+    });
+    if (!notification) throw new NotFoundException();
+    const updated = notification.readAt ? notification : await db.inAppNotification.update({
+      where: { id: notification.id },
+      data: { readAt: new Date() },
+      select: { id: true, readAt: true },
+    });
+    return { id: updated.id, readAt: updated.readAt?.toISOString() ?? null };
+  }
+  @Post('notifications/read-all') async markAllNotificationsRead(@Req() req: Request) {
+    const user = await this.identity.user(req);
+    const result = await db.inAppNotification.updateMany({
+      where: { userId: user.id, readAt: null },
+      data: { readAt: new Date() },
+    });
+    return { markedRead: result.count };
+  }
   @Get('admin/financial-rules') async financialRules(@Req() req: Request) {
     const user = await this.identity.user(req);
     if (!isFinancialRuleAdmin(user)) throw new ForbiddenException('You do not have permission to manage financial review rules.');
@@ -2186,6 +2236,22 @@ class Api {
             await tx.paydayRoutineEntry.createMany({
               data: actions.map(action => ({ incomeRecordId: created.id, actionId: action.id, plannedAmount: action.plannedAmount })),
             });
+            const preferences = await tx.notificationPreference.findUnique({
+              where: { userId: user.id },
+              select: { paydayInApp: true },
+            });
+            if (preferences?.paydayInApp) {
+              await tx.inAppNotification.create({
+                data: {
+                  userId: user.id,
+                  spaceId: membership.spaceId,
+                  type: 'PAYDAY_ROUTINE_READY',
+                  title: 'Payday routine ready',
+                  message: `${actions.length} planned ${actions.length === 1 ? 'action is' : 'actions are'} ready for you to review. No money has been moved.`,
+                  dedupeKey: `payday-routine:${created.id}`,
+                },
+              });
+            }
           }
         }
         await tx.auditEvent.create({

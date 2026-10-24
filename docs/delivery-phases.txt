@@ -94,6 +94,7 @@ Household reports preserve original currencies and summarize goal progress by de
 Phase 9 — Engagement
 Implement:
 •	per-user, opt-in notification preferences for email and in-app channels;
+•	in-app notification inbox with unread counts and read controls;
 •	achievements;
 •	levels;
 •	streaks;
@@ -104,7 +105,8 @@ Implement:
 •	maturity reminders.
 Acceptance:
 Financial routines work without encouraging unnecessary risk or excessive financial activity.
-Notification preferences are private to each user, disabled by default, and do not imply notification delivery until the relevant delivery feature is implemented.
+Notification preferences are private to each user and disabled by default. A channel is only active when its corresponding trigger and delivery feature are implemented.
+Opted-in payday confirmations create private in-app notices for due routines; notices never move money and cannot expose another user's notifications.
 Phase 10 — Currency & Discovery
 Implement:
 •	currencies;

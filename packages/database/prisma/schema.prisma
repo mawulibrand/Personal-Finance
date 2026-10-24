@@ -144,6 +144,9 @@ enum RecommendationFeedback {
   NOT_HELPFUL
   NOT_APPLICABLE
 }
+enum InAppNotificationType {
+  PAYDAY_ROUTINE_READY
+}
 enum SharedFinancialEntityType {
   SAVINGS_ACCOUNT
   INVESTMENT
@@ -195,6 +198,7 @@ model User {
   createdFinancialShares SharedFinancialItem[] @relation("FinancialShareCreator")
   householdOwnershipAllocations HouseholdOwnershipAllocation[]
   notificationPreferences NotificationPreference?
+  inAppNotifications InAppNotification[]
   personalSpace FinancialSpace? @relation("PersonalOwner")
 }
 model NotificationPreference {
@@ -209,6 +213,21 @@ model NotificationPreference {
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model InAppNotification {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  spaceId String? @db.Uuid
+  type InAppNotificationType
+  title String
+  message String
+  dedupeKey String @unique
+  readAt DateTime? @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space FinancialSpace? @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  @@index([userId, readAt, createdAt])
+  @@index([spaceId, createdAt])
 }
 model FinancialSpace {
   id String @id @default(uuid()) @db.Uuid
@@ -239,6 +258,7 @@ model FinancialSpace {
   personalFinancialShares SharedFinancialItem[] @relation("FinancialShareSourceSpace")
   receivedFinancialShares SharedFinancialItem[] @relation("FinancialShareTargetSpace")
   ownershipAllocations HouseholdOwnershipAllocation[]
+  inAppNotifications InAppNotification[]
 }
 model Membership {
   id String @id @default(uuid()) @db.Uuid
